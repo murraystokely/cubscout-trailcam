@@ -125,6 +125,15 @@ laptop on 5 GHz guest Wi-Fi cannot see a Pi on the main network. Then try
 `ping wildlifecam1.local`. If the name does not resolve but you know the
 address, use `--host 192.168.1.57`, or try `--scan`.
 
+**Nothing is found by name, but `--scan` works.**
+Finding cameras by their `.local` name relies on multicast, and some Wi-Fi
+networks carry multicast unreliably --- a query to the camera may simply never
+arrive, even though the camera is powered on and reachable. (Raspberry Pi
+Wi-Fi power saving makes this worse, since the Pi wakes for multicast only
+now and then.) Use `--scan` on such a network: it probes each address by
+ordinary unicast, which Wi-Fi delivers reliably, and still labels the camera
+with its real `wildlifecam*` name.
+
 **`.local` names do not resolve on Linux, but work from a Mac.**
 Something else on the laptop is probably holding the mDNS multicast socket.
 Google Chrome is the usual culprit: it binds `224.0.0.251:5353` for Chromecast

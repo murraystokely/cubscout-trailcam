@@ -216,6 +216,46 @@ def mdns_query(host: str, timeout: float = 1.5) -> str:
         sock.close()
 
 
+def mdns_reverse(ip: str, timeout: float = 1.0) -> str:
+    """Ask a host, over unicast mDNS, what its own hostname is.
+
+    Used to give a friendly directory name to a camera found by --scan. Reverse
+    DNS (socket.gethostbyaddr) returns nothing on a typical home LAN, and a
+    multicast mDNS query may never reach the camera on a Wi-Fi network that
+    handles multicast poorly (see mdns_query). But a *unicast* mDNS query sent
+    straight to the camera's address is answered reliably -- it does not depend
+    on multicast delivery at all -- so we ask the camera for the PTR record of
+    its own address and get back its .local name.
+    """
+    request = _build_ptr_query(ip)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Resend within the window: Wi-Fi occasionally drops the odd packet, and
+        # a lost single query would leave a camera needlessly unnamed.
+        RESEND_EVERY = 0.4
+        deadline = time.monotonic() + timeout
+        next_send = 0.0
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                return ""
+            if now >= next_send:
+                sock.sendto(request, (ip, MDNS_PORT))
+                next_send = now + RESEND_EVERY
+            sock.settimeout(min(RESEND_EVERY, deadline - now))
+            try:
+                data, _ = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            name = _parse_ptr_reply(data)
+            if name:
+                return name
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
 def _build_a_query(host: str) -> bytes:
     """Build a DNS query packet asking for the A (IPv4) record of a host."""
     # Header: id, flags (0 = standard query), 1 question, no answers/authority/
@@ -225,6 +265,39 @@ def _build_a_query(host: str) -> bytes:
     qname = b"".join(bytes([len(l)]) + l.encode("ascii") for l in labels) + b"\x00"
     question = qname + struct.pack(">HH", 1, 1)  # QTYPE=A(1), QCLASS=IN(1)
     return header + question
+
+
+def _build_ptr_query(ip: str) -> bytes:
+    """Build a DNS query packet asking for the PTR (name) record of an address."""
+    header = struct.pack(">HHHHHH", 0x4243, 0x0000, 1, 0, 0, 0)
+    labels = ip.split(".")[::-1] + ["in-addr", "arpa"]
+    qname = b"".join(bytes([len(l)]) + l.encode("ascii") for l in labels) + b"\x00"
+    question = qname + struct.pack(">HH", 12, 1)  # QTYPE=PTR(12), QCLASS=IN(1)
+    return header + question
+
+
+def _read_name(data: bytes, offset: int) -> tuple:
+    """Read a (possibly compressed) DNS name; return (name, offset_after_it)."""
+    labels = []
+    after = offset
+    jumped = False
+    while offset < len(data):
+        length = data[offset]
+        if length == 0:  # end of name
+            offset += 1
+            if not jumped:
+                after = offset
+            break
+        if length & 0xC0 == 0xC0:  # compression pointer
+            if not jumped:
+                after = offset + 2
+            offset = ((length & 0x3F) << 8) | data[offset + 1]
+            jumped = True
+            continue
+        offset += 1
+        labels.append(data[offset:offset + length].decode("ascii", "replace"))
+        offset += length
+    return ".".join(labels), after
 
 
 def _skip_name(data: bytes, offset: int) -> int:
@@ -261,6 +334,29 @@ def _parse_a_reply(data: bytes) -> str:
         offset += 10
         if rtype == 1 and rdlen == 4 and offset + 4 <= len(data):  # an A record
             return socket.inet_ntoa(data[offset:offset + 4])
+        offset += rdlen
+    return ""
+
+
+def _parse_ptr_reply(data: bytes) -> str:
+    """Pull the first PTR (hostname) out of a DNS reply, or "" if none."""
+    if len(data) < 12:
+        return ""
+    _id, flags, qdcount, ancount = struct.unpack(">HHHH", data[:8])
+    if not flags & 0x8000:  # QR bit clear: a query, not a response
+        return ""
+    offset = 12
+    for _ in range(qdcount):  # skip the echoed question section
+        offset = _skip_name(data, offset) + 4  # + QTYPE + QCLASS
+    for _ in range(ancount):
+        offset = _skip_name(data, offset)
+        if offset + 10 > len(data):
+            break
+        rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[offset:offset + 10])
+        offset += 10
+        if rtype == 12:  # PTR record: rdata is the host's name
+            name, _ = _read_name(data, offset)
+            return name
         offset += rdlen
     return ""
 
@@ -506,11 +602,20 @@ def probe(camera: Camera, timeout: float) -> None:
 
 
 def reverse_name(address: str) -> str:
-    """Best-effort hostname for an IP address, used to name its directory."""
+    """Best-effort hostname for an IP address, used to name its directory.
+
+    Tries the system reverse resolver first, then a unicast mDNS query to the
+    host itself. On a home LAN there is usually no PTR record in ordinary DNS,
+    but the camera answers a unicast mDNS query reliably (see mdns_reverse),
+    so a camera found by --scan still gets its real "wildlifecam*" name rather
+    than a name made up from its IP address.
+    """
     try:
         return sanitize(socket.gethostbyaddr(address)[0])
     except OSError:
-        return ""
+        pass
+    name = mdns_reverse(address)
+    return sanitize(name) if name else ""
 
 
 # --------------------------------------------------------------------------
