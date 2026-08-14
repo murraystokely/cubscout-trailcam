@@ -363,7 +363,8 @@ lsblk -b -d -o NAME,SIZE /dev/sdc
 > such as [PiShrink](https://github.com/Drewsif/PiShrink).
 
 A *larger* destination card is fine, but the extra space is not used until
-the filesystem is expanded --- see [step 20](#20-expand-the-filesystem-on-a-larger-card).
+the filesystem is expanded --- see
+[step 21](#21-expand-the-filesystem-on-a-larger-card).
 
 ## 15. Identify and unmount the destination
 
@@ -491,26 +492,52 @@ ls -l /mnt/etc/ssh/ssh_host_*
 Do **not** remove `/home/webelos/.ssh/authorized_keys`; those are the
 laptop's login authorization keys and should remain on every clone.
 
-### `/etc/machine-id`
+## 20. Reset the machine ID
 
-We did not need to remove `/etc/machine-id` for the earlier working clones.
-The important uniqueness changes for this project are the hostname and SSH
-host keys. Raspberry Pi OS identifies itself to DHCP by its (unique) MAC
-address rather than by machine-id, so duplicates cause no address
-conflicts in practice.
-
-If two cameras ever do end up fighting over one DHCP lease, this is the
-first thing to rule out:
+Every clone carries a copy of the master's `/etc/machine-id`, the identifier
+systemd assigns to an installation. Clear it so each Pi generates its own on
+first boot:
 
 ```bash
-sudo rm -f /mnt/etc/machine-id
-sudo truncate -s 0 /mnt/var/lib/dbus/machine-id
+sudo truncate -s 0 /mnt/etc/machine-id
 ```
 
-Both are regenerated on the next boot. Avoid adding extra
-clone-preparation steps unless a concrete need arises.
+An **empty** file is what systemd expects in an image that will be used on
+several machines --- it is the signal to generate a fresh ID at boot. Do not
+delete the file outright and do not invent a value by hand.
 
-## 20. Expand the filesystem on a larger card
+D-Bus keeps its own copy. On Raspberry Pi OS it is normally a symbolic link
+to `/etc/machine-id`, in which case the truncate above already covered it.
+Check, and replace it with the link if it turns out to be a real file:
+
+```bash
+ls -l /mnt/var/lib/dbus/machine-id
+sudo rm -f /mnt/var/lib/dbus/machine-id
+sudo ln -s /etc/machine-id /mnt/var/lib/dbus/machine-id
+```
+
+The new link points at `/etc/machine-id` as the *Pi* will see it once
+booted. While the card is still mounted at `/mnt` on the laptop it looks
+like a broken link, and that is expected.
+
+Verify the file is present and empty:
+
+```bash
+ls -l /mnt/etc/machine-id      # size 0
+```
+
+After the clone boots, confirm it minted its own:
+
+```bash
+cat /etc/machine-id
+```
+
+Each camera should report a different value. A duplicated machine ID makes
+systemd journal entries from different cameras indistinguishable, and any
+DHCP client configured to derive its identifier from it will hand two
+cameras the same lease.
+
+## 21. Expand the filesystem on a larger card
 
 A cloned card keeps the *source* card's partition sizes, so a 32 GB image
 burned to a 64 GB card leaves half the card unused. Raspberry Pi OS only
@@ -534,7 +561,7 @@ df -h /
 More free space directly means more photographs before
 `final_motion_capture.py` hits its 95% safety limit.
 
-## 21. Finish
+## 22. Finish
 
 ```bash
 sync
@@ -575,6 +602,7 @@ Then verify on the Pi:
 
 ```bash
 hostname
+cat /etc/machine-id
 ip -4 addr show wlan0
 rpicam-hello --list-cameras
 systemctl status ssh --no-pager
@@ -667,17 +695,19 @@ For each new card:
 9. Delete `/mnt/etc/ssh/ssh_host_*`.
 10. Run `sudo ssh-keygen -A -f /mnt`.
 11. Verify the new SSH host keys.
-12. `sync`.
-13. Unmount `/mnt`.
-14. Eject the card.
-15. Boot the target Pi.
-16. Expand the filesystem if the card is larger than the master.
-17. Find its DHCP address.
-18. Verify SSH.
-19. Verify camera detection.
-20. Verify nginx.
-21. Verify the wildlife-camera service.
-22. Verify new photographs are being written.
+12. Empty `/mnt/etc/machine-id`.
+13. `sync`.
+14. Unmount `/mnt`.
+15. Eject the card.
+16. Boot the target Pi.
+17. Expand the filesystem if the card is larger than the master.
+18. Find its DHCP address.
+19. Verify SSH.
+20. Verify camera detection.
+21. Verify nginx.
+22. Verify the wildlife-camera service.
+23. Verify the machine ID is unique.
+24. Verify new photographs are being written.
 
 ## Copy/paste example: `/dev/sdc` → `wildlifecam7`
 
@@ -706,9 +736,12 @@ sudo sed -i 's/wildlifecam[0-9]*/wildlifecam7/g' /mnt/etc/hosts
 sudo rm -f /mnt/etc/ssh/ssh_host_*
 sudo ssh-keygen -A -f /mnt
 
+sudo truncate -s 0 /mnt/etc/machine-id
+
 cat /mnt/etc/hostname
 grep wildlifecam /mnt/etc/hosts
 ls -l /mnt/etc/ssh/ssh_host_*
+ls -l /mnt/etc/machine-id
 
 sync
 sudo umount /mnt
