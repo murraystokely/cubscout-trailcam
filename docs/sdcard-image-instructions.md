@@ -178,21 +178,21 @@ before creating the master SD-card image so every clone inherits it.
 A convenient system-wide location is:
 
 ```text
-/usr/share/backgrounds/cubscoutsbg.jpg
+/usr/share/rpd-wallpaper/cubscoutsbg.jpg
 ```
 
 For example, if `cubscoutsbg.jpg` is currently in the `webelos` user's home
 directory:
 
 ```bash
-sudo cp /home/webelos/cubscoutsbg.jpg /usr/share/backgrounds/cubscoutsbg.jpg
-sudo chmod 644 /usr/share/backgrounds/cubscoutsbg.jpg
+sudo cp /home/webelos/cubscoutsbg.jpg /usr/share/rpd-wallpaper/cubscoutsbg.jpg
+sudo chmod 644 /usr/share/rpd-wallpaper/cubscoutsbg.jpg
 ```
 
 Verify:
 
 ```bash
-ls -lh /usr/share/backgrounds/cubscoutsbg.jpg
+ls -lh /usr/share/rpd-wallpaper/cubscoutsbg.jpg
 ```
 
 Then, from the Raspberry Pi desktop UI:
@@ -201,13 +201,13 @@ Then, from the Raspberry Pi desktop UI:
 2. Open **Desktop Preferences**.
 3. Select the **Appearance** or **Picture** setting for the desktop
    background.
-4. Browse to `/usr/share/backgrounds/`.
+4. Browse to `/usr/share/rpd-wallpaper/`.
 5. Select `cubscoutsbg.jpg`.
 6. Apply the setting and confirm that the Cub Scouts image is now the
    desktop background.
 
 Do this on the **master image before cloning**. The desktop configuration
-and `/usr/share/backgrounds/cubscoutsbg.jpg` will then be present on every
+and `/usr/share/rpd-wallpaper/cubscoutsbg.jpg` will then be present on every
 cloned SD card.
 
 If a clone is primarily headless, this setting does not affect the camera,
