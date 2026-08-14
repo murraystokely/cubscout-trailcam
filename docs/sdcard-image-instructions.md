@@ -427,6 +427,21 @@ ext4 root filesystem.
 
 Do this on the laptop, with the freshly burned card still inserted.
 
+> **Shortcut:** the script
+> [`../clone/clone_image.sh`](../clone/clone_image.sh) automates all of the
+> steps in this part. It works on an *image file* rather than a card ---
+> personalizing the master image once per camera, ready to burn --- so it
+> never risks writing to the wrong disk:
+>
+> ```bash
+> sudo ../clone/clone_image.sh --hostname wildlifecam7 \
+>     ~/webelos-wildlifecam.img ~/wildlifecam7.img
+> ```
+>
+> The manual steps below are still the reference, and are what you use to
+> personalize a card that has already been burned. See
+> [`../clone/README.md`](../clone/README.md).
+
 ## 17. Mount the clone
 
 ```bash
