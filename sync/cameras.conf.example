@@ -1,0 +1,26 @@
+# Optional list of wildlife cameras.
+#
+# Copy this file to cameras.conf in the same directory and edit it. The sync
+# program reads cameras.conf automatically, in addition to whatever it finds
+# on the network by itself.
+#
+# One camera per line. Blank lines and lines starting with # are ignored.
+#
+#   NAME  HOST
+#
+# NAME is the directory the photos are copied into on the laptop.
+# HOST is the mDNS name or IP address of the camera, optionally with a
+# different ssh user in front of it.
+
+# The Scout's name makes a friendlier directory than "wildlifecam2".
+# alice     wildlifecam1.local
+# ben       wildlifecam2.local
+
+# A camera on a network where .local names do not work:
+# creek     192.168.1.57
+
+# A camera whose Pi uses a different login than the default:
+# oldpi     pi@192.168.1.58
+
+# A single field means "use the hostname as the directory name too":
+# wildlifecam3.local

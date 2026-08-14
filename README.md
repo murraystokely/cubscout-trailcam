@@ -500,7 +500,12 @@ Ideas include:
 -   Count motion events.
 -   Experiment with the Raspberry Pi AI Camera or an AI accelerator.
 -   Try identifying animals instead of merely detecting motion.
--   Automatically copy photographs to a laptop when returning to camp.
+
+Some of this is already started:
+
+-   Automatically copy photographs to a laptop when returning to camp ---
+    see [`sync/README.md`](sync/README.md), which finds the cameras on the
+    local network and copies their photographs into a directory per camera.
 
 The important idea is that each feature can be introduced as another
 small step. The finished system is built from the same simple concepts

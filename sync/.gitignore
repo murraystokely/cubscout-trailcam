@@ -1,0 +1,4 @@
+# Each family's own camera list stays local.
+cameras.conf
+
+__pycache__/
