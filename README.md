@@ -420,6 +420,14 @@ A useful approach is to configure every camera with the same camping
 SSID and password before leaving home. When the camping hotspot or
 router is turned on, all of the cameras can join automatically.
 
+## Building several cameras
+
+Rather than repeating every installation step on each Raspberry Pi, set up
+one card completely and clone it. The procedure --- configuring the master
+card, saving an image of it, burning copies, and giving each copy its own
+hostname and SSH host keys --- is in
+[`docs/sdcard-image-instructions.md`](docs/sdcard-image-instructions.md).
+
 ## Hardware
 
 The project intentionally works with several generations of Raspberry Pi
