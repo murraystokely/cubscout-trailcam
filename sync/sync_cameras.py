@@ -39,8 +39,10 @@ import re
 import shlex
 import shutil
 import socket
+import struct
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -53,6 +55,12 @@ DEFAULT_DEST = "~/wildlifecam-photos"
 
 SSH_PORT = 22
 HTTP_PORT = 80
+
+# The well-known mDNS multicast group and port (RFC 6762). We send our own
+# queries here as a fallback when the system resolver cannot reach a .local
+# name; see mdns_query() for why that fallback is necessary.
+MDNS_ADDR = "224.0.0.251"
+MDNS_PORT = 5353
 
 # A host found by scanning the whole subnet has to prove it is a camera. We
 # look for this file first, then fall back to the word "wildlife" on the
@@ -95,14 +103,166 @@ class SyncResult:
 def resolve(host: str) -> str:
     """Return the IPv4 address for a hostname, or "" if it does not resolve.
 
-    The resolver does its own timing out, usually within a few seconds for a
-    .local name that nothing answers to.
+    Ordinary names go through the system resolver. For .local names we fall
+    back to a direct mDNS query when the system resolver comes up empty,
+    because on Linux the system resolver can be silently starved by another
+    program on the machine -- see mdns_query() for the whole story.
+    """
+    ip = _resolve_system(host)
+    if ip:
+        return ip
+    if host.lower().rstrip(".").endswith(".local"):
+        return mdns_query(host)
+    return ""
+
+
+def _resolve_system(host: str) -> str:
+    """Resolve a hostname through the operating system's resolver.
+
+    This handles ordinary DNS and, on machines where it works, .local names
+    too (via mDNSResponder on macOS or avahi/NSS on Linux). It does its own
+    timing out, usually within a few seconds for a name nothing answers to.
     """
     try:
         infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
         return infos[0][4][0]
     except (socket.gaierror, OSError, IndexError):
         return ""
+
+
+def outgoing_ip() -> str:
+    """The laptop's own IPv4 on the interface it uses to reach the network."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No packets are actually sent; this just picks the outgoing interface.
+        probe.connect(("192.0.2.1", 9))
+        return probe.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        probe.close()
+
+
+def mdns_query(host: str, timeout: float = 1.5) -> str:
+    """Resolve a .local hostname to an IPv4 address with our own mDNS query.
+
+    Why we cannot simply trust the system resolver
+    ----------------------------------------------
+    On macOS, .local names "just work" because mDNSResponder is built into the
+    OS. On Linux the same job is done by avahi-daemon through the libnss-mdns
+    module, so socket.getaddrinfo() quietly asks avahi on our behalf.
+
+    The trouble is a Linux multicast-delivery quirk. mDNS runs on UDP port 5353
+    on the multicast group 224.0.0.251, and avahi-daemon binds that port on the
+    wildcard address 0.0.0.0. But other programs speak mDNS too -- notably
+    Google Chrome, which binds a socket to the *specific* address
+    224.0.0.251:5353 for Chromecast discovery. When a multicast reply arrives,
+    the kernel hands it to the socket bound to the most specific address, so
+    Chrome receives every response and avahi receives none. avahi's queries
+    still go out, but the answers are siphoned away, so each resolve times out
+    and getaddrinfo() returns nothing. Closing Chrome fixes it; leaving Chrome
+    running breaks .local name resolution for the whole machine. (Diagnosed the
+    hard way: avahi-resolve times out while `ss -ulnp` shows chrome sitting on
+    224.0.0.251:5353.)
+
+    The workaround: send the mDNS query ourselves from an *ephemeral* UDP port
+    rather than from 5353. RFC 6762 section 6.7 calls this a "legacy" or
+    one-shot query: because our source port is not 5353, the camera replies
+    with an ordinary unicast UDP packet sent straight back to our port. That
+    reply never touches the contested 224.0.0.251:5353 multicast socket, so no
+    other program can intercept it and we get our answer no matter what else is
+    running on the laptop.
+    """
+    request = _build_a_query(host)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+        # On a laptop with several interfaces (Wi-Fi, docker bridges, a USB
+        # dongle) make sure the query leaves by the one that reaches the LAN.
+        out_ip = outgoing_ip()
+        if out_ip:
+            try:
+                sock.setsockopt(
+                    socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(out_ip)
+                )
+            except OSError:
+                pass
+        # Read replies until the deadline. We are on an ephemeral port, so the
+        # only packets we see are unicast answers addressed to us. Wi-Fi drops
+        # multicast freely and the first query is the one most often lost, so we
+        # resend every RESEND_EVERY seconds rather than trusting a single shot
+        # (RFC 6762 expects one-shot queriers to retransmit).
+        RESEND_EVERY = 0.4
+        deadline = time.monotonic() + timeout
+        next_send = 0.0  # 0 means "send immediately on the first pass"
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                return ""
+            if now >= next_send:
+                sock.sendto(request, (MDNS_ADDR, MDNS_PORT))
+                next_send = now + RESEND_EVERY
+            sock.settimeout(min(RESEND_EVERY, deadline - now))
+            try:
+                data, _ = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            ip = _parse_a_reply(data)
+            if ip:
+                return ip
+    except OSError:
+        return ""
+    finally:
+        sock.close()
+
+
+def _build_a_query(host: str) -> bytes:
+    """Build a DNS query packet asking for the A (IPv4) record of a host."""
+    # Header: id, flags (0 = standard query), 1 question, no answers/authority/
+    # additional. The id is arbitrary; a one-shot responder echoes it back.
+    header = struct.pack(">HHHHHH", 0x4242, 0x0000, 1, 0, 0, 0)
+    labels = host.rstrip(".").split(".")
+    qname = b"".join(bytes([len(l)]) + l.encode("ascii") for l in labels) + b"\x00"
+    question = qname + struct.pack(">HH", 1, 1)  # QTYPE=A(1), QCLASS=IN(1)
+    return header + question
+
+
+def _skip_name(data: bytes, offset: int) -> int:
+    """Advance past a (possibly compressed) DNS name, returning the new offset."""
+    while offset < len(data):
+        length = data[offset]
+        if length == 0:  # end of name
+            return offset + 1
+        if length & 0xC0 == 0xC0:  # compression pointer: two bytes, then done
+            return offset + 2
+        offset += 1 + length
+    return offset
+
+
+def _parse_a_reply(data: bytes) -> str:
+    """Pull the first A record out of a DNS reply, or "" if there is none.
+
+    We asked one question about one host and only unicast answers reach our
+    ephemeral port, so the first A record in the answer section is our host.
+    """
+    if len(data) < 12:
+        return ""
+    _id, flags, qdcount, ancount = struct.unpack(">HHHH", data[:8])
+    if not flags & 0x8000:  # QR bit clear: this is a query, not a response
+        return ""
+    offset = 12
+    for _ in range(qdcount):  # skip the echoed question section
+        offset = _skip_name(data, offset) + 4  # + QTYPE + QCLASS
+    for _ in range(ancount):
+        offset = _skip_name(data, offset)
+        if offset + 10 > len(data):
+            break
+        rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[offset:offset + 10])
+        offset += 10
+        if rtype == 1 and rdlen == 4 and offset + 4 <= len(data):  # an A record
+            return socket.inet_ntoa(data[offset:offset + 4])
+        offset += rdlen
+    return ""
 
 
 def port_open(host: str, port: int, timeout: float) -> bool:
@@ -205,15 +365,9 @@ def _browse_dns_sd(prefix: str, timeout: float) -> list:
 
 def local_subnet() -> str:
     """Guess the laptop's own /24 network, e.g. "192.168.1.0/24"."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # No packets are actually sent; this just picks the outgoing interface.
-        probe.connect(("192.0.2.1", 9))
-        my_ip = probe.getsockname()[0]
-    except OSError:
+    my_ip = outgoing_ip()
+    if not my_ip:
         return ""
-    finally:
-        probe.close()
     return str(ipaddress.ip_network(f"{my_ip}/24", strict=False))
 
 

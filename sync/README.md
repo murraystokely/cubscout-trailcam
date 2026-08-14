@@ -125,6 +125,18 @@ laptop on 5 GHz guest Wi-Fi cannot see a Pi on the main network. Then try
 `ping wildlifecam1.local`. If the name does not resolve but you know the
 address, use `--host 192.168.1.57`, or try `--scan`.
 
+**`.local` names do not resolve on Linux, but work from a Mac.**
+Something else on the laptop is probably holding the mDNS multicast socket.
+Google Chrome is the usual culprit: it binds `224.0.0.251:5353` for Chromecast
+discovery, and the Linux kernel then delivers every mDNS reply to Chrome
+instead of to `avahi-daemon`, so system name resolution quietly times out. You
+can confirm it with `ss -ulnp | grep 5353` (look for `chrome` on
+`224.0.0.251:5353`). Closing Chrome restores resolution. You should not need
+to, though --- `sync_cameras.py` sends its own mDNS query from an ordinary
+port, which the camera answers by unicast, so it keeps finding cameras by name
+regardless of what else is running. See the comment on `mdns_query()` for the
+details.
+
 **It asks for a password over and over.**
 Set up an ssh key as described above.
 
