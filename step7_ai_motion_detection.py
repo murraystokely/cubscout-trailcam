@@ -213,10 +213,28 @@ HEARTBEAT_INTERVAL = 300.0        # prove we are alive in journalctl
 #
 # See ai/evaluation-design.md for what happens to them on the laptop.
 
-RECORD_EVERY = 3600.0             # start a burst this often, in seconds
+# This is ON by default, so a camera starts collecting the moment the
+# file is copied across, with nothing else to remember.  The first burst
+# begins immediately rather than an hour later.
+RECORD_BY_DEFAULT = True
+
+RECORD_EVERY = 600.0              # start a burst this often, in seconds
 RECORD_LENGTH = 60.0              # keep recording for this long
 RECORD_INTERVAL = 1.0             # save a frame this often during a burst
 RECORD_PREFIX = "train"
+
+# Know what this costs before leaving it running.  At roughly 450 KB a
+# frame, one burst a minute in six:
+#
+#     60 frames an hour  x  6 bursts  =   360 frames  ~=  160 MB an hour
+#                                                        3.8 GB a day
+#
+# That is sized for a tuning session of an hour or two, not for a season
+# in the woods.  Before leaving a camera out unattended, put RECORD_EVERY
+# back to 3600 (one burst an hour, ~650 MB a day) or set RECORD_BY_DEFAULT
+# to False.  The disk guard stops training frames at 95% full either way,
+# so a forgotten setting cannot fill a card, but it can make the sync
+# slow and dull.
 
 # Whenever we keep a photograph we keep a second copy with the boxes
 # drawn on: the blue one the motion rules found, the green ones the AI
@@ -282,11 +300,11 @@ parser.add_argument("--no-annotated", action="store_true",
                     help="do not save the _annotated.jpg copy with the "
                          "boxes drawn on (saves half the card space)")
 
-parser.add_argument("--record", action="store_true",
-                    help=f"also record a {RECORD_LENGTH:.0f} second burst of "
-                         f"training frames every "
-                         f"{RECORD_EVERY / 60:.0f} minutes, whether anything "
-                         f"is happening or not")
+parser.add_argument("--no-record", action="store_true",
+                    help=f"do not record the {RECORD_LENGTH:.0f} second burst "
+                         f"of training frames taken every "
+                         f"{RECORD_EVERY / 60:.0f} minutes whether anything is "
+                         f"happening or not")
 
 parser.add_argument("--photo-dir", default=PHOTO_DIR,
                     help=f"where photographs go (default: {PHOTO_DIR})")
@@ -296,7 +314,7 @@ options = parser.parse_args()
 photo_dir = options.photo_dir
 dry_run = options.dry_run
 save_annotated = SAVE_ANNOTATED and not options.no_annotated
-recording_enabled = options.record
+recording_enabled = RECORD_BY_DEFAULT and not options.no_record
 
 
 # ------------------------------------------------------------
@@ -671,7 +689,9 @@ print(f"  blob >= {MIN_BLOB_AREA} px needs confirming, "
 
 if recording_enabled:
     print(f"  recording a {RECORD_LENGTH:.0f} second training burst every "
-          f"{RECORD_EVERY / 60:.0f} minutes")
+          f"{RECORD_EVERY / 60:.0f} minutes "
+          f"(~{RECORD_LENGTH / RECORD_INTERVAL * (3600 / RECORD_EVERY) * 0.45:.0f} MB/hour "
+          f"into training/)")
 
 
 # ------------------------------------------------------------
