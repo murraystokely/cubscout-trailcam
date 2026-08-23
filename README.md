@@ -182,6 +182,41 @@ sudo systemctl enable wildlife-camera
 sudo systemctl start wildlife-camera
 ```
 
+### Cameras that have been upgraded to the AI Camera
+
+The service always starts `final_motion_capture.py`, but that program now
+checks what camera is actually plugged in before it does anything else.
+If it finds a Raspberry Pi AI Camera it hands straight over to
+[`step7_ai_motion_detection.py`](step7_ai_motion_detection.py), which
+uses the AI built into the sensor to make a much better decision about
+what is worth photographing.
+
+So upgrading a camera is: swap the hardware, reboot, done. There is no
+service file to edit, and a Pi still on the older camera module carries
+on exactly as before. The handover uses `os.execv`, which replaces the
+running program rather than starting a second one, so `systemctl status`
+and `Restart=` keep working as they always did.
+
+Both programs write into the same place, so nginx and
+[`sync/sync_cameras.py`](sync/sync_cameras.py) cannot tell which one ran:
+
+``` text
+/var/www/html/photos/2026-08-23/
+├── 141530.jpg               <- the photograph
+├── 141530_annotated.jpg     <- the same frame with the boxes drawn on
+└── 141530.json              <- what the camera measured and what the AI saw
+```
+
+The last two are new with the AI Camera. Opening the annotated copy in
+the browser next to the original is the quickest way to see *why* the
+camera decided to keep a picture.
+
+To check which program a camera is running:
+
+``` bash
+journalctl -u wildlife-camera | grep "handing over"
+```
+
 Check it:
 
 ``` bash

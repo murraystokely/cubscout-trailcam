@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import time
 import cv2
@@ -6,6 +7,64 @@ from datetime import datetime
 from picamera2 import Picamera2
 
 PHOTO_DIR="/var/www/html/photos"
+
+# ------------------------------------------------------------
+# Hand over to the AI Camera program, if this Pi has one
+# ------------------------------------------------------------
+#
+# Every camera in the fleet starts THIS script from systemd at boot.  As
+# each one gets upgraded to a Raspberry Pi AI Camera it should really be
+# running step7 instead, which uses the AI built into the sensor.
+#
+# Rather than editing the service file on every Pi as we work through
+# them, we just ask what camera is actually plugged in.  Upgrade the
+# hardware, reboot, and the right program runs by itself.
+#
+# Both programs write to PHOTO_DIR above, in the same
+# <date>/<HHMMSS>.jpg layout, so nginx and sync_cameras.py cannot tell
+# the difference.  step7 simply adds _annotated.jpg and .json beside it.
+
+AI_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "step7_ai_motion_detection.py",
+)
+
+# step7 cannot start without this, so if the imx500 packages were never
+# installed we are better off staying here than crash-looping there.
+AI_MODEL = (
+    "/usr/share/imx500-models/"
+    "imx500_network_ssd_mobilenetv2_fpnlite_320x320_pp.rpk"
+)
+
+
+def ai_camera_attached():
+    """True if one of the attached cameras is an IMX500 AI Camera.
+
+    global_camera_info() just reads what is on the camera connector.  It
+    does not open the camera, so it is safe to call before we start.
+    """
+    try:
+        cameras = Picamera2.global_camera_info()
+    except Exception:
+        return False
+
+    return any("imx500" in camera.get("Model", "").lower()
+               for camera in cameras)
+
+
+if (ai_camera_attached()
+        and os.path.exists(AI_SCRIPT)
+        and os.path.exists(AI_MODEL)):
+
+    print("AI Camera found -- handing over to "
+          f"{os.path.basename(AI_SCRIPT)}")
+    sys.stdout.flush()
+
+    # execv REPLACES this process rather than starting a second one, so
+    # systemd carries on supervising the same service and Restart= still
+    # works.  Nothing below this line ever runs on an AI Camera Pi.
+    os.execv(sys.executable,
+             [sys.executable, "-u", AI_SCRIPT] + sys.argv[1:])
 
 picam2 = Picamera2()
 picam2.start()
