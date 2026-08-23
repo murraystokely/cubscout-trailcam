@@ -94,7 +94,26 @@ MAX_PIXEL_THRESHOLD = 75
 
 # Blob sizes are written as a fraction of the frame so they keep their
 # meaning if you ever change LORES_SIZE.
-MIN_BLOB_FRACTION = 0.00026       # ~20 px at 320x240: the noise floor
+#
+# MIN_BLOB_FRACTION was measured, not guessed.  On wildlifecam4, pointed
+# at the patio, a fern frond at the right-hand edge of the frame waved in
+# the breeze all afternoon and produced blobs of 19 to 95 pixels, over and
+# over, in the same spot.  Real motion at the same camera -- a person on
+# the path, a hand near the lens -- produced 8,960 pixels and upwards.
+# Two orders of magnitude apart, so the floor goes between them, nearer
+# the weeds than the wildlife.
+#
+# Note what does NOT work here: waiting for a second sighting.  A leaf
+# that gusts and drops does fail that test, but a frond in a steady
+# breeze keeps moving, in one place, for hours -- so it confirms itself
+# perfectly.  Persistence catches twitchy noise; only size catches a
+# plant that genuinely will not sit still.
+#
+# The cost is real: this floor gives up on an animal smaller than about
+# 150 px, which at this lens is a squirrel beyond ~10 m or a deer beyond
+# ~40 m.  If a camera looks down a long trail rather than at a patio,
+# measure its own site with --record and lower this for that camera.
+MIN_BLOB_FRACTION = 0.00195       # ~150 px at 320x240
 STRONG_BLOB_FRACTION = 0.0043     # ~330 px: big enough to save on sight
 
 MIN_BLOB_AREA = int(MIN_BLOB_FRACTION * MOTION_PIXELS)
