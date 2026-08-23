@@ -1,11 +1,58 @@
 # Cloning a personalized camera image
 
-Two helpers, both for a **Linux laptop**:
+Three helpers, all for a **Linux laptop**, one per step of the round trip:
 
+- [`capture_image.sh`](capture_image.sh) --- read the master camera's SD card
+  into a master image file.
 - [`clone_image.sh`](clone_image.sh) --- turn the master image into a
   personalized image file for one camera (never touches a card).
 - [`burn_image.sh`](burn_image.sh) --- write an image to an SD card, with
   safety checks so it only ever writes to a removable card.
+
+```text
+master card  --capture_image.sh-->  master.img
+master.img   --clone_image.sh---->  wildlifecam7.img
+wildlifecam7.img --burn_image.sh->  a new card
+```
+
+## Capturing the master image
+
+[`capture_image.sh`](capture_image.sh) is the first step: it reads the whole
+SD card out of the camera you built by hand and into an image file. It
+automates *Part 2, sections 11-13* of
+[`../docs/sdcard-image-instructions.md`](../docs/sdcard-image-instructions.md).
+
+```bash
+lsblk -o NAME,SIZE,TYPE,RM,TRAN,MODEL         # which one is the card?
+sudo ./capture_image.sh --verify /dev/sdc ~/webelos-wildlifecam.img.gz
+```
+
+Reading cannot damage the card, but it is still easy to aim at the wrong
+device and spend twenty minutes copying the laptop's own disk into your home
+directory. So the same checks as `burn_image.sh` apply before anything is
+read: whole disk not a partition, not the disk backing the running system,
+and it has to look removable. It also refuses to overwrite an existing image
+without `--force`, checks there is room for the output, and unmounts the card
+first --- reading a mounted filesystem captures it half-written and the clone
+may not boot.
+
+The output format follows the filename, exactly like `clone_image.sh`: end it
+in `.gz` or `.xz` to compress, anything else for raw. Compressing is well
+worth it **if you zeroed the free space first** (section 9 of the guide) ---
+that is what turns a 32 GB card into well under 2 GB.
+
+When it finishes it prints the source card size in bytes, which is the number
+Part 3 of the guide asks you to write down, and hands the finished image back
+to you rather than leaving it owned by root.
+
+### Options
+
+| Option | What it does |
+| --- | --- |
+| `--verify` | Read the card back and compare it to the image. |
+| `-f`, `--force` | Overwrite the output image if it already exists. |
+| `--allow-internal` | Permit a non-removable source (the system-disk and partition checks still apply). |
+| `-h`, `--help` | Show usage. |
 
 [`clone_image.sh`](clone_image.sh) takes the master wildlife-camera SD-card
 image and writes a new image file that is made unique for one camera, ready to

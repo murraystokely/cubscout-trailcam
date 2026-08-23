@@ -323,6 +323,15 @@ sudo dd if=/dev/sdc of=~/webelos-wildlifecam.img bs=4M status=progress conv=fsyn
 sync
 ```
 
+> [`../clone/capture_image.sh`](../clone/capture_image.sh) does sections 11
+> to 13 for you --- identifying, unmounting and reading the card --- and
+> refuses to read anything that is not a whole, removable disk, so a mistyped
+> device name cannot quietly copy the laptop's own disk instead:
+>
+> ```bash
+> sudo ./capture_image.sh --verify /dev/sdc ~/webelos-wildlifecam.img.gz
+> ```
+
 Use the whole device (`/dev/sdc`), **not** `/dev/sdc1` or `/dev/sdc2`.
 
 Optionally compress:

@@ -106,17 +106,21 @@ case "$IMAGE" in
 esac
 [ "$VERIFY" -eq 0 ] || command -v cmp >/dev/null || die "cmp needed for --verify"
 
+# lsblk right-aligns numeric columns even with -n, so RM comes back as " 0"
+# rather than "0" and every numeric test below silently fails. Trim it.
+lsblk1() { lsblk -dno "$1" -- "$2" 2>/dev/null | head -1 | tr -d '[:space:]'; }
+
 # Resolve the device to its real path (follows /dev/disk/by-id/... symlinks).
 DEV=$(readlink -f -- "$DEVICE")
 [ -b "$DEV" ] || die "$DEVICE ($DEV) is not a block device"
-KNAME=$(lsblk -dno KNAME -- "$DEV" 2>/dev/null | head -1)
+KNAME=$(lsblk1 KNAME "$DEV")
 [ -n "$KNAME" ] || die "could not identify $DEV"
 
 # --------------------------------------------------------------------------
 # Safety gate 1: must be a whole disk, not a partition
 # --------------------------------------------------------------------------
 
-DTYPE=$(lsblk -dno TYPE -- "$DEV" 2>/dev/null | head -1)
+DTYPE=$(lsblk1 TYPE "$DEV")
 if [ "$DTYPE" != disk ]; then
     die "$DEV is a '$DTYPE', not a whole disk. Pass the whole card (e.g. /dev/sdc), not a partition."
 fi
@@ -165,9 +169,9 @@ fi
 # Safety gate 3: must look removable
 # --------------------------------------------------------------------------
 
-RM=$(lsblk -dno RM -- "$DEV" 2>/dev/null | head -1)
-HOTPLUG=$(lsblk -dno HOTPLUG -- "$DEV" 2>/dev/null | head -1)
-TRAN=$(lsblk -dno TRAN -- "$DEV" 2>/dev/null | head -1)
+RM=$(lsblk1 RM "$DEV")
+HOTPLUG=$(lsblk1 HOTPLUG "$DEV")
+TRAN=$(lsblk1 TRAN "$DEV")
 SYSRM=$(cat "/sys/block/$KNAME/removable" 2>/dev/null || echo 0)
 
 REMOVABLE=no
