@@ -144,7 +144,23 @@ LIGHTING_SHIFT = 10
 MIN_MEAN_LUMA = 25
 
 # How long the background takes to forget the past, in seconds.
-BACKGROUND_TAU = 40.0
+#
+# Where nothing is happening it has to keep up with the world quietly
+# drifting: the sun moving, shadows creeping across a patio, the camera
+# settling a hair on soft ground.  Ten seconds keeps up with all of that.
+BACKGROUND_TAU = 10.0
+
+# Underneath whatever IS moving it learns four times more slowly, so an
+# animal that stops to browse does not dissolve into the scenery while we
+# are still watching it.
+#
+# But it does still learn, and that is the whole point.  An earlier
+# version froze the moving region completely -- it only learned where the
+# mask was clear.  A pixel that once looked different therefore stayed
+# different for ever, so the tiniest camera shake wrote a permanent scar
+# along every sharp edge in the scene, the scars grew into each other,
+# and the camera photographed an empty patio 48 times in two minutes.
+BACKGROUND_TAU_BUSY = 40.0
 
 # ...and how fast it re-learns just after a lighting change.
 SETTLE_ALPHA = 0.25
@@ -208,6 +224,13 @@ SAVE_ANNOTATED = True
 MIN_AI_CONFIDENCE = 0.25          # worth writing into the JSON
 MIN_AI_RESCUE_CONFIDENCE = 0.40   # worth promoting a weak blob
 MIN_AI_HINT_CONFIDENCE = 0.45     # worth flagging as probably an animal
+
+# The AI recognises the furniture too.  A bench, a chair, a fence post is
+# detected in every single frame, and its box is huge -- so a stray blob
+# of noise that happens to land inside it would be "confirmed" by an
+# object that has not moved all day.  To count as support, the AI's box
+# has to be roughly the size of the thing that actually moved.
+MAX_AI_BOX_RATIO = 20
 
 # COCO has no deer, raccoon, squirrel or coyote, so a real animal here
 # usually lands on the nearest thing the model does happen to know.
@@ -342,8 +365,17 @@ def ai_supports(detections, motion_box):
     "dog".  All we are asking is whether the model agrees that an object
     is there, which is exactly the question a leaf fails.
     """
+    _, _, motion_w, motion_h = motion_box
+    motion_area = max(motion_w * motion_h, 1)
+
     for detection in detections:
         if detection["confidence"] < MIN_AI_RESCUE_CONFIDENCE:
+            continue
+
+        _, _, w, h = detection["box"]
+
+        # Ignore the scenery: see MAX_AI_BOX_RATIO above.
+        if w * h > MAX_AI_BOX_RATIO * motion_area:
             continue
 
         if boxes_overlap(detection["box"], motion_box):
@@ -596,6 +628,7 @@ OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
 
 BACKGROUND_ALPHA = min(1.0, LOOP_DELAY / BACKGROUND_TAU)
+BACKGROUND_ALPHA_BUSY = min(1.0, LOOP_DELAY / BACKGROUND_TAU_BUSY)
 
 settle_checks = 0
 
@@ -904,10 +937,13 @@ while True:
             cv2.accumulateWeighted(gray, background, SETTLE_ALPHA)
             settle_checks -= 1
         else:
-            # Learn everywhere EXCEPT under the moving object.  The old
-            # version only learned when nothing moved at all, which let
-            # the background freeze and drift, which made it see even
-            # more motion.
+            # Always learn a little, everywhere, including underneath the
+            # thing that is moving.  This line is what stops a mistake
+            # from becoming permanent.
+            cv2.accumulateWeighted(gray, background, BACKGROUND_ALPHA_BUSY)
+
+            # Then learn again, faster, wherever nothing is moving, so
+            # the background keeps up with the light and the weather.
             cv2.accumulateWeighted(gray, background, BACKGROUND_ALPHA,
                                    mask=cv2.bitwise_not(mask))
 
