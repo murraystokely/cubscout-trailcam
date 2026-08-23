@@ -183,10 +183,20 @@ RECORD_LENGTH = 60.0              # keep recording for this long
 RECORD_INTERVAL = 1.0             # save a frame this often during a burst
 RECORD_PREFIX = "train"
 
-# Annotated copies are for debugging.  Leave them off in the field: they
-# double the storage and the sync time, and ai/design.md walks *.jpg, so
-# every event would arrive on the laptop twice.
-SAVE_ANNOTATED = False
+# Whenever we keep a photograph we keep a second copy with the boxes
+# drawn on: the blue one the motion rules found, the green ones the AI
+# recognised.  Looking at those side by side is far and away the quickest
+# way to see WHY the camera made a decision, which is the whole point of
+# the exercise.
+#
+# The cost is real and worth knowing: it doubles the storage on the card
+# and doubles the sync time.  --no-annotated turns it off if a card ever
+# gets tight.
+#
+# One thing to remember for the laptop: ingest in ai/design.md walks
+# <camera>/<date>/*.jpg, so it must skip anything ending in
+# _annotated.jpg or every event will be counted twice.
+SAVE_ANNOTATED = True
 
 
 # ------------------------------------------------------------
@@ -226,9 +236,9 @@ parser.add_argument("--dry-run", action="store_true",
                     help="save no photographs; write measurements to CSV "
                          "so you can choose your own thresholds")
 
-parser.add_argument("--annotated", action="store_true",
-                    help="also save a copy with the boxes drawn on, in an "
-                         "annotated/ subdirectory")
+parser.add_argument("--no-annotated", action="store_true",
+                    help="do not save the _annotated.jpg copy with the "
+                         "boxes drawn on (saves half the card space)")
 
 parser.add_argument("--record", action="store_true",
                     help=f"also record a {RECORD_LENGTH:.0f} second burst of "
@@ -243,7 +253,7 @@ options = parser.parse_args()
 
 photo_dir = options.photo_dir
 dry_run = options.dry_run
-save_annotated = SAVE_ANNOTATED or options.annotated
+save_annotated = SAVE_ANNOTATED and not options.no_annotated
 recording_enabled = options.record
 
 
@@ -534,14 +544,15 @@ def save_training_frame(now, image):
 
 def save_annotated_copy(day_directory, base_filename, image,
                         motion_box, ai_detections):
-    """Draw the boxes onto a debugging copy.
+    """Save a second copy of the photograph with the boxes drawn on.
 
-    This goes in its own subdirectory so the laptop's *.jpg walk does
-    not pick up two copies of every event.
+    Blue is the patch of connected pixels the motion rules found.  Green
+    is whatever the camera's own AI recognised, with how sure it was.
+    When the camera saves a picture of nothing, this is the copy that
+    tells you which rule to go and argue with.
+
+    It sits next to the original as <time>_annotated.jpg.
     """
-    annotated_directory = f"{day_directory}/annotated"
-    os.makedirs(annotated_directory, exist_ok=True)
-
     annotated = image.copy()
 
     if motion_box is not None:
@@ -560,7 +571,7 @@ def save_annotated_copy(day_directory, base_filename, image,
         cv2.putText(annotated, label, (x, max(y - 10, 24)),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
 
-    cv2.imwrite(f"{annotated_directory}/{base_filename}.jpg", annotated,
+    cv2.imwrite(f"{day_directory}/{base_filename}_annotated.jpg", annotated,
                 [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
 
 

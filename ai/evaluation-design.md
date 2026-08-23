@@ -41,6 +41,7 @@ work, not a different mode.
 /var/www/html/photos/
   2026-08-23/
     141530.jpg                 <- a wildlife photograph the rules chose
+    141530_annotated.jpg       <- the same frame with the boxes drawn on
     141530.json
     training/
       train_150000_012.jpg     <- a burst frame, chosen by nobody
@@ -71,6 +72,13 @@ so these arrive on the laptop automatically. But `ingest` in
 [`design.md`](design.md) walks `<camera>/<date>/*.jpg`, and training frames must
 **not** become rows in the wildlife manifest --- they are test data, not
 sightings. The subdirectory is what keeps them out.
+
+**Two filters `ingest` will need.** For the same reason, it has to skip the
+`training/` subdirectory *and* anything ending in `_annotated.jpg`. Those
+annotated copies are how we see why the camera made a decision, so they are
+saved for every event and they sit right next to the originals --- which means a
+naive `*.jpg` walk would count every sighting twice and then run MegaDetector
+over frames that already have boxes painted on them.
 
 ### The baseline comes for free
 
