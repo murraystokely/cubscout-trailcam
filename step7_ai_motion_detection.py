@@ -22,6 +22,7 @@ guessing.
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -46,6 +47,26 @@ MODEL = (
 PHOTO_DIR = "/var/www/html/photos"
 
 CAMERA_NAME = socket.gethostname()
+
+
+def code_fingerprint():
+    """A short hash of this very file.
+
+    Every photograph records it, and it is printed at start-up.  That way
+    a picture can always be traced back to the exact code that chose to
+    keep it -- and, just as usefully, you can tell at a glance whether the
+    camera is running what you think you copied to it.  Deploying to ten
+    Raspberry Pis by hand, that question comes up more than you would
+    like.
+    """
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+
+CODE_VERSION = code_fingerprint()
 
 
 # ------------------------------------------------------------
@@ -559,6 +580,7 @@ def save_event(now, image, decision, measurements, ai_detections):
 
     information = {
         "camera": CAMERA_NAME,
+        "code": CODE_VERSION,
         "time": now.isoformat(),
 
         "image": {
@@ -682,6 +704,8 @@ disk_ok = True
 last_disk_check = 0.0
 last_heartbeat = time.time()
 
+print(f"step7 code {CODE_VERSION}, photographs {MAIN_SIZE[0]}x{MAIN_SIZE[1]} "
+      f"into {photo_dir}")
 print(f"Watching for wildlife on {CAMERA_NAME}"
       f"{' (dry run: saving nothing)' if dry_run else ''}...")
 print(f"  blob >= {MIN_BLOB_AREA} px needs confirming, "
