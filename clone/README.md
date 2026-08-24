@@ -13,7 +13,7 @@ Four helpers, all for a **Linux laptop**, covering the round trip:
 
 ```text
 master card      --capture_image.sh-->  master.img
-master.img       --shrink_image.sh-->   master.img   (optional, smaller)
+master.img       --shrink_image.sh-->   master.img   (optional, smaller file)
 master.img       --clone_image.sh--->   wildlifecam7.img
 wildlifecam7.img --burn_image.sh---->   a new card
 ```
@@ -124,9 +124,20 @@ off one may miss fitting another by a hair.
 Linux root filesystem --- until the whole file fits the card you actually have,
 and leaves the FAT boot partition alone.
 
+**It does not burn anything.** It rewrites the image *file*, in place, and
+leaves it for `burn_image.sh` to put on a card afterwards. `--fit` names a card
+only so its capacity can be read; nothing is ever written to it.
+
 ```bash
-sudo ./shrink_image.sh --dry-run ~/wc10.img /dev/sda   # what would it do?
-sudo ./shrink_image.sh ~/wc10.img /dev/sda             # do it
+sudo ./shrink_image.sh --dry-run --fit /dev/sda ~/wc10.img   # what would it do?
+sudo ./shrink_image.sh --fit /dev/sda ~/wc10.img             # rewrite the image
+sudo ./burn_image.sh --verify ~/wc10.img /dev/sda            # THEN burn it
+```
+
+Use `--output` to write a shrunken copy and leave the original alone:
+
+```bash
+sudo ./shrink_image.sh --fit /dev/sda --output ~/wc10-small.img ~/wc10.img
 ```
 
 Always run `--dry-run` first. It prints the whole plan --- current size, target
@@ -167,7 +178,8 @@ sudo raspi-config --expand-rootfs
 
 | Option | What it does |
 | --- | --- |
-| `--size SIZE` | Fit this many bytes instead of reading a device (accepts `K`/`M`/`G`). |
+| `--fit DEVICE` | Shrink until it fits this card. Reads its capacity only; never writes to it. |
+| `--size SIZE` | Fit this many bytes instead of reading a card (accepts `K`/`M`/`G`). |
 | `--minimal` | Shrink as far as the filesystem allows, ignoring the target. |
 | `--margin SIZE` | Spare room so the image also fits a slightly smaller card (default 16MiB). |
 | `--output FILE` | Work on a copy and leave the original untouched (needs the space). |
