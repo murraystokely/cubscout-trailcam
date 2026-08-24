@@ -44,10 +44,11 @@ work, not a different mode.
     141530_annotated.jpg       <- the same frame with the boxes drawn on
     141530.json
     training/
-      train_150000_012.jpg     <- a burst frame, chosen by nobody
-      train_150001_014.jpg
-      train_150002_011.jpg
+      train_150000_012.png     <- what the motion rules saw, every check
+      train_150000_262.png
+      train_150000_512.png
       ...
+      train_150000_012.jpg     <- full colour, every 10 s, for MegaDetector
     measurements-wildlifecam3.csv
 ```
 
@@ -92,24 +93,35 @@ burst lands on the laptop we already know what the camera in the woods *would*
 have done with frames it was not allowed to filter --- which is precisely the
 number we could never get before.
 
-### Open question: burst cadence vs loop cadence
+### Two streams, because the two jobs want different pictures
 
-The detector checks four times a second (`LOOP_DELAY = 0.25`). Bursts record
-once a second (`RECORD_INTERVAL = 1.0`). These do not match, and it matters:
-replaying a 1 Hz burst exercises `CONFIRM_CHECKS` and `BACKGROUND_TAU` at a
-quarter of their real speed, so any conclusion about the *confirmation* rules
-would be wrong.
+The first afternoon of collecting settled a question this document had left
+open, and settled it differently from either option originally listed.
 
-Two honest options, and we should probably do both:
+1311 unbiased frames came back from a quiet patio. **99.3% of them were
+`quiet`**, and within a burst each frame differed from that burst's first by a
+median of **0.22% of its pixels**. Fifty-seven near-identical 682 KB
+photographs an hour is a great deal of sync for very little new information.
 
-| Setting | Covers | Good for |
-|---|---|---|
-| `RECORD_INTERVAL = 1.0`, `RECORD_LENGTH = 60` | 60 s of real time | Does an animal appear at all? Threshold sweeps on blob size and shape. |
-| `RECORD_INTERVAL = 0.25`, `RECORD_LENGTH = 15` | 15 s, faithful | Confirmation rules, background dynamics --- a true replay of the live loop. |
+What the **motion rules** need is the little 320x240 grey frame, because that
+is literally all they ever look at. Storing the big colour one and shrinking it
+offline is 23 times the bytes *and less faithful* --- it replays a JPEG of a
+downscale rather than the plane the camera actually handed over. So the burst
+saves the raw lores plane as PNG, unblurred, **every check** at the full loop
+rate. That also closes the cadence problem below: a replay now runs the same
+pipeline over the same pixels at the same 4 Hz the live loop used.
 
-Start with the 1 Hz form, because coverage of real time is what gets animals
-into the dataset at all. Switch a camera or two to the faithful form once we
-start tuning `CONFIRM_CHECKS`.
+What **species identification** needs is the big colour one, and it does not
+need many --- MegaDetector wants a recognisable animal, not a smooth film. So a
+full-resolution colour frame lands every 10 seconds.
+
+| | size | rate | per 30 s burst |
+|---|---|---|---|
+| lores 320x240 grey PNG | 55 KB | every check (4 Hz) | 120 frames, 6.6 MB |
+| full 2028x1520 colour JPEG | 690 KB | every 10 s | 3 frames, 2.1 MB |
+
+Hourly bursts then cost about **9 MB an hour, 212 MB a day** --- against 6.1 GB
+a day for the original settings, for strictly better replay data.
 
 ### Storage budget
 
@@ -203,11 +215,12 @@ instead of sensor frames. Swapping in a different algorithm then means writing a
 second class with the same `update()` method --- which is also the cleanest way
 to explain what an interface is for.
 
-**Fidelity caveat:** the camera's greyscale comes from the sensor's own hardware
-downscale (the `lores` Y plane); the replay gets it by shrinking a saved JPEG.
-They are close but not identical, and JPEG compression adds artefacts the live
-path never sees. If this turns out to matter, the fix is to also save the lores
-plane as a small PNG beside each training frame.
+**Fidelity is no longer a caveat.** An earlier draft of this document worried
+that the replay would shrink a saved JPEG while the camera used the sensor's own
+hardware downscale, so the two would differ by exactly the compression artefacts
+we are trying to measure. That is why the burst now stores the raw `lores` plane
+as a lossless PNG, before the blur: the replay runs the identical pipeline over
+the identical pixels.
 
 ---
 

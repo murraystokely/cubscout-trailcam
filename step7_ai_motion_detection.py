@@ -239,10 +239,40 @@ HEARTBEAT_INTERVAL = 300.0        # prove we are alive in journalctl
 # begins immediately rather than an hour later.
 RECORD_BY_DEFAULT = True
 
-RECORD_EVERY = 600.0              # start a burst this often, in seconds
-RECORD_LENGTH = 60.0              # keep recording for this long
-RECORD_INTERVAL = 1.0             # save a frame this often during a burst
+RECORD_EVERY = 3600.0             # start a burst this often, in seconds
+RECORD_LENGTH = 30.0              # keep recording for this long
 RECORD_PREFIX = "train"
+
+# A burst is recorded twice over, because the two jobs want different
+# pictures and the first afternoon of collecting made that obvious.
+#
+# 1311 unbiased frames came back from a quiet patio.  99.3% of them were
+# "quiet", and within a burst each frame differed from the first by a
+# median of 0.22% of its pixels.  Fifty-seven near-identical 682 KB
+# photographs an hour is a lot of sync for very little new information.
+#
+# What the MOTION rules need is the little 320x240 grey frame -- because
+# that is literally all they ever look at.  Storing the big colour one
+# and shrinking it later is 23 times the bytes AND less faithful, since
+# it replays a JPEG of a downscale rather than the plane the camera
+# actually handed us.  PNG, so it is exact.
+RECORD_LORES_INTERVAL = 0.0       # 0 = every single check (the loop rate)
+
+# What SPECIES identification needs is the big colour one, and it does
+# not need many: MegaDetector on the laptop wants a recognisable animal,
+# not a smooth film.
+RECORD_FULL_INTERVAL = 10.0       # seconds between full-resolution frames
+
+# Sizes measured on real frames from wildlifecam4:
+#
+#   full 2028x1520 colour JPEG    682 KB
+#   lores 320x240 grey PNG         54 KB   (exact, what the rules see)
+#
+#   30 s burst, lores at 4 Hz + full every 10 s  =  ~8 MB
+#   hourly, all day                              = ~200 MB
+#
+# The old settings -- 60 s of full-resolution frames every 10 minutes --
+# came to 5.6 GB a day for the same information.
 
 # Know what this costs before leaving it running.  At roughly 450 KB a
 # frame, one burst a minute in six:
@@ -612,16 +642,35 @@ def save_event(now, image, decision, measurements, ai_detections):
     return original_filename, animal_hint
 
 
-def save_training_frame(now, image):
-    """Save a frame the motion rules did NOT choose.
+def training_name(now, suffix):
+    """<time>_<milliseconds>.<suffix>, in its own training/ subdirectory.
 
-    Two things about the name matter.  It lives in its own training/
-    subdirectory, so the laptop's "walk every *.jpg" step cannot mistake
-    these for wildlife photographs.  And it carries milliseconds, so a
-    program replaying the burst offline knows exactly how far apart the
-    frames really were instead of assuming.
+    The subdirectory keeps these out of the laptop's "walk every *.jpg"
+    step, so they cannot be mistaken for wildlife photographs.  The
+    milliseconds let a program replaying the burst offline know exactly
+    how far apart the frames really were instead of assuming.
     """
-    training_directory = (f"{photo_dir}/{now.strftime('%Y-%m-%d')}/training")
+    training_directory = f"{photo_dir}/{now.strftime('%Y-%m-%d')}/training"
+    os.makedirs(training_directory, exist_ok=True)
+
+    return (f"{training_directory}/{RECORD_PREFIX}_{now.strftime('%H%M%S')}"
+            f"_{now.microsecond // 1000:03d}.{suffix}")
+
+
+def save_training_lores(now, raw_gray):
+    """Save exactly the frame the motion rules were handed, losslessly.
+
+    Unblurred and uncompressed, so replaying it offline runs the very
+    same pipeline over the very same pixels.
+    """
+    name = training_name(now, "png")
+    cv2.imwrite(name, raw_gray)
+    return os.path.basename(name)
+
+
+def save_training_frame(now, image):
+    """Save a full-resolution colour frame for the laptop to identify."""
+    training_directory = f"{photo_dir}/{now.strftime('%Y-%m-%d')}/training"
     os.makedirs(training_directory, exist_ok=True)
 
     name = (f"{RECORD_PREFIX}_{now.strftime('%H%M%S')}"
@@ -696,6 +745,7 @@ settle_checks = 0
 record_next = time.time() if recording_enabled else None
 record_until = 0.0
 record_last = 0.0
+record_lores_last = 0.0
 
 last_save_time = 0.0
 save_times = []
@@ -713,9 +763,9 @@ print(f"  blob >= {MIN_BLOB_AREA} px needs confirming, "
 
 if recording_enabled:
     print(f"  recording a {RECORD_LENGTH:.0f} second training burst every "
-          f"{RECORD_EVERY / 60:.0f} minutes "
-          f"(~{RECORD_LENGTH / RECORD_INTERVAL * (3600 / RECORD_EVERY) * 0.45:.0f} MB/hour "
-          f"into training/)")
+          f"{RECORD_EVERY / 60:.0f} minutes into training/: "
+          f"{LORES_SIZE[0]}x{LORES_SIZE[1]} grey every check, "
+          f"full colour every {RECORD_FULL_INTERVAL:.0f} s")
 
 
 # ------------------------------------------------------------
@@ -758,8 +808,14 @@ while True:
 
             # The Y plane of the small stream is already greyscale.
             lores = request.make_array("lores")
-            gray = cv2.GaussianBlur(
-                lores[:MOTION_HEIGHT, :MOTION_WIDTH], (5, 5), 0)
+
+            # Keep the plane exactly as the camera handed it over.  This
+            # is what a training frame stores: blurring first and saving
+            # that would make an offline replay blur a second time, and
+            # measure a slightly different picture from the live one.
+            raw_gray = lores[:MOTION_HEIGHT, :MOTION_WIDTH].copy()
+
+            gray = cv2.GaussianBlur(raw_gray, (5, 5), 0)
 
             # ------------------------------------------------
             # Compare against the learned background
@@ -975,9 +1031,16 @@ while True:
                 print(f"{now:%H:%M:%S} recording a "
                       f"{RECORD_LENGTH:.0f} second training burst")
 
-            recording = (moment < record_until
-                         and moment - record_last >= RECORD_INTERVAL
-                         and disk_ok)
+            in_burst = moment < record_until and disk_ok
+
+            # the little grey frame, every check
+            record_lores = (in_burst
+                            and moment - record_lores_last
+                            >= RECORD_LORES_INTERVAL)
+
+            # the big colour one, now and then
+            recording = (in_burst
+                         and moment - record_last >= RECORD_FULL_INTERVAL)
 
             # Copying the full-resolution frame is the expensive part, so
             # only do it once we know the frame is being kept -- either as
@@ -1057,6 +1120,10 @@ while True:
         # ----------------------------------------------------
 
         training_file = ""
+
+        if record_lores:
+            training_file = save_training_lores(now, raw_gray)
+            record_lores_last = moment
 
         if recording:
             training_file = save_training_frame(now, image)
