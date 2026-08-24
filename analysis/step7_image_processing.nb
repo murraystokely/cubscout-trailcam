@@ -1,260 +1,104 @@
 Notebook[
- {Cell[CellGroupData[{Cell["How the Trail Camera Decides to Take a \
-Photograph", "Title", ExpressionUUID -> 
-       "643f1349-61ac-4933-a788-a139bd83231c"], Cell["The same pipeline as \
-step7_ai_motion_detection.py, in the Wolfram Language", "Subtitle", 
+ {Cell[CellGroupData[{Cell["How the Trail Camera Decides to Take a Photograph", "Title", ExpressionUUID -> 
+       "643f1349-61ac-4933-a788-a139bd83231c"], Cell["The same pipeline as step7_ai_motion_detection.py, in the Wolfram Language", "Subtitle", 
       ExpressionUUID -> "09af42f0-7c5e-49a5-a4c5-aa56978a4303"], 
-     Cell["This notebook is the companion to step7_image_processing.ipynb. It \
-works through the same steps on the same photographs, using Wolfram Language \
-image functions instead of OpenCV. Much of what takes several lines in Python \
-is a single built-in here, which makes it a quick place to try an idea before \
-writing it out in the camera program.", "Text", ExpressionUUID -> 
-       "0312c52e-30c3-4d6c-81d1-8c6bcb637a69"], Cell["Every picture came off \
-wildlifecam4 on 23 August 2026, watching a patio with cheerios on the ground \
-to attract a bird. Nothing is staged. Set the working directory to this \
-notebook's folder first.", "Text", ExpressionUUID -> 
-       "315322c6-f0be-4ba8-b1d6-6a16ae1f1bda"], Cell["SetDirectory[NotebookDi\
-rectory[]];\ndata = FileNameJoin[{Directory[], \"data\"}];", "Input", 
+     Cell["This notebook is the companion to step7_image_processing.ipynb. It works through the same steps on the same photographs, using Wolfram Language image functions instead of OpenCV. Much of what takes several lines in Python is a single built-in here, which makes it a quick place to try an idea before writing it out in the camera program.", "Text", ExpressionUUID -> 
+       "0312c52e-30c3-4d6c-81d1-8c6bcb637a69"], Cell["Every picture came off wildlifecam4 on 23 August 2026, watching a patio with cheerios on the ground to attract a bird. Nothing is staged. Evaluate it from the top: Evaluation \[FilledRightTriangle] Evaluate Notebook. The cells share state \[LongDash] the first one sets `data`, which every later cell needs \[LongDash] so running one on its own gives errors about `data` not being a directory.", "Text", ExpressionUUID -> 
+       "315322c6-f0be-4ba8-b1d6-6a16ae1f1bda"], Cell["SetDirectory[\n  If[$Notebooks && StringQ[NotebookDirectory[]],\n   NotebookDirectory[],           (* normal: run from the open notebook *)\n   Directory[]]];                 (* headless: whatever we were started in *)\n\ndata = FileNameJoin[{Directory[], \"data\"}];\n\n(* Say plainly whether that worked.  Every later cell needs `data`, so a\n   silent failure here turns into confusing errors further down. *)\nIf[DirectoryQ[data],\n Print[\"ready: \", Length[FileNames[\"*.jpg\", data]], \" images in \", data],\n Print[\"CANNOT FIND THE IMAGES. Looked in: \", data,\n  \"\\nOpen this notebook from the analysis/ folder, or SetDirectory there by hand.\"]]", "Input", 
       ExpressionUUID -> "44174163-7a69-4278-9427-e13ddb6c1b86"], 
      Cell[CellGroupData[{Cell["1. The two streams", "Section", 
          ExpressionUUID -> "b0072d50-0f17-4d62-882c-c79f109ab306"], 
-        Cell["The camera produces a full-resolution colour photograph and, \
-for free, a small copy from its own hardware. The motion rules only ever look \
-at the small one \[LongDash] every decision below is made on an image smaller \
-than a postage stamp.", "Text", ExpressionUUID -> 
+        Cell["The camera produces a full-resolution colour photograph and, for free, a small copy from its own hardware. The motion rules only ever look at the small one \[LongDash] every decision below is made on an image smaller than a postage stamp.", "Text", ExpressionUUID -> 
           "9205175f-8263-4ef6-b2ae-c92f842218b0"], 
-        Cell[CellGroupData[{Cell["full = Import[FileNameJoin[{data, \
-\"scene_cheerios.jpg\"}]];\nlores = ImageResize[full, {640, \
-480}];\n{ImageDimensions[full], ImageDimensions[lores]}", "Input", 
+        Cell[CellGroupData[{Cell["full = Import[FileNameJoin[{data, \"scene_cheerios.jpg\"}]];\nlores = ImageResize[full, {640, 480}];\n{ImageDimensions[full], ImageDimensions[lores]}", "Input", 
             ExpressionUUID -> "276feb08-b5e7-472e-a706-bf0ea1fa51c1"]}, 
-          Open]], Cell[CellGroupData[{Cell["GraphicsRow[{full, lores}, \
-ImageSize -> 900,\n  PlotLabel -> \"main 2028x1520          lores 640x480\"]"\
-, "Input", ExpressionUUID -> "409d2b50-c8b2-4d6b-a9e3-69d386fce736"]}, 
-          Open]], Cell["Resolution does not help tell an animal from a weed \
-\[LongDash] both scale together, so the ratio between them never changes. \
-What it buys is reach at the small end, because the cleanup kernels later on \
-are a fixed number of pixels and erase anything only a few across. The lores \
-size is a distance setting.", "Text", ExpressionUUID -> 
+          Open]], Cell[CellGroupData[{Cell["GraphicsRow[{full, lores}, ImageSize -> 900,\n  PlotLabel -> \"main 2028x1520          lores 640x480\"]", "Input", ExpressionUUID -> "409d2b50-c8b2-4d6b-a9e3-69d386fce736"]}, 
+          Open]], Cell["Resolution does not help tell an animal from a weed \[LongDash] both scale together, so the ratio between them never changes. What it buys is reach at the small end, because the cleanup kernels later on are a fixed number of pixels and erase anything only a few across. The lores size is a distance setting.", "Text", ExpressionUUID -> 
           "7917b8e5-6058-4e21-817a-ee9381e0f260"]}, Open]], 
      Cell[CellGroupData[{Cell["2. Brightness, and the night filter", 
          "Section", ExpressionUUID -> 
-          "0df92f20-85fe-4424-97ea-078beb28d7cc"], Cell["After dark this \
-camera has no infra-red lamp, so it photographs its own noise. Nothing can be \
-recognised in that, so the first question is simply whether there is enough \
-light.", "Text", ExpressionUUID -> "479b80df-5139-40a0-8743-0d7154b9b88b"], 
-        Cell[CellGroupData[{Cell["grey = ColorConvert[lores, \
-\"Grayscale\"];\nluma = 255 Mean[Flatten[ImageData[grey]]]\n(* step7 stops \
-here if this is below MIN_MEAN_LUMA = 25 *)", "Input", ExpressionUUID -> 
+          "0df92f20-85fe-4424-97ea-078beb28d7cc"], Cell["After dark this camera has no infra-red lamp, so it photographs its own noise. Nothing can be recognised in that, so the first question is simply whether there is enough light.", "Text", ExpressionUUID -> "479b80df-5139-40a0-8743-0d7154b9b88b"], 
+        Cell[CellGroupData[{Cell["grey = ColorConvert[lores, \"Grayscale\"];\nluma = 255 Mean[Flatten[ImageData[grey]]]\n(* step7 stops here if this is below MIN_MEAN_LUMA = 25 *)", "Input", ExpressionUUID -> 
              "b470e1f5-ec6b-4a6c-9e31-c6e8cf10b627"]}, Open]], 
-        Cell[CellGroupData[{Cell["dusk = ImageMultiply[grey, 0.35];\nnight = \
-ImageAdd[ImageMultiply[grey, 0.12], \n  RandomImage[NormalDistribution[0, \
-0.05], ImageDimensions[grey]]];\nGrid[{{\"afternoon\", \"dusk (simulated)\", \
-\"night (simulated)\"},\n      {grey, dusk, night},\n      Map[255 \
-Mean[Flatten[ImageData[#]]] &, {grey, dusk, night}]},\n  Frame -> All]", 
+        Cell[CellGroupData[{Cell["dusk = ImageMultiply[grey, 0.35];\nnight = ImageAdd[ImageMultiply[grey, 0.12], \n  RandomImage[NormalDistribution[0, 0.05], ImageDimensions[grey]]];\nGrid[{{\"afternoon\", \"dusk (simulated)\", \"night (simulated)\"},\n      {grey, dusk, night},\n      Map[255 Mean[Flatten[ImageData[#]]] &, {grey, dusk, night}]},\n  Frame -> All]", 
             "Input", ExpressionUUID -> 
              "aaca1875-388c-4c86-9d89-8ff8cbbe1933"]}, Open]]}, Open]], 
      Cell[CellGroupData[{Cell["3. Blur, on purpose", "Section", 
          ExpressionUUID -> "3314b97e-37c6-4e77-8856-50fbb70d9442"], 
-        Cell["The camera sits on the ground and shakes by a fraction of a \
-pixel. On flat concrete that changes nothing; along a sharp edge it changes a \
-great deal, because a bright pixel and a dark pixel swap places. Blurring \
-first spreads each edge over several pixels so a tiny shift no longer \
-produces a large difference.", "Text", ExpressionUUID -> 
+        Cell["The camera sits on the ground and shakes by a fraction of a pixel. On flat concrete that changes nothing; along a sharp edge it changes a great deal, because a bright pixel and a dark pixel swap places. Blurring first spreads each edge over several pixels so a tiny shift no longer produces a large difference.", "Text", ExpressionUUID -> 
           "16e53cd1-d3a1-4599-b734-8bc3f83898d0"], 
-        Cell[CellGroupData[{Cell["blurred = GaussianFilter[grey, 5];\nshifted \
-= Image[RotateLeft[ImageData[grey], {0, \
-1}]];\n{Total[ImageData[Binarize[ImageDifference[grey, shifted], 25/255]], \
-2],\n Total[ImageData[Binarize[ImageDifference[blurred, \
-GaussianFilter[shifted, 5]], 25/255]], 2]}\n(* changed pixels: without blur, \
-then with *)", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["blurred = GaussianFilter[grey, 5];\nshifted = Image[RotateLeft[ImageData[grey], {0, 1}]];\n{Total[ImageData[Binarize[ImageDifference[grey, shifted], 25/255]], 2],\n Total[ImageData[Binarize[ImageDifference[blurred, GaussianFilter[shifted, 5]], 25/255]], 2]}\n(* changed pixels: without blur, then with *)", "Input", ExpressionUUID -> 
              "953d040a-8379-4099-84e8-8553b9ff153a"]}, Open]]}, Open]], 
      Cell[CellGroupData[{Cell["4. The background model", "Section", 
          ExpressionUUID -> "0de0132c-ed8c-4543-ae64-98f7ced3f158"], 
-        Cell["Comparing each frame with the one before it fails the moment an \
-animal stops moving \[LongDash] and a deer standing still is exactly the \
-photograph worth having. So the camera keeps a running average of what the \
-scene usually looks like and compares against that.", "Text", 
+        Cell["Comparing each frame with the one before it fails the moment an animal stops moving \[LongDash] and a deer standing still is exactly the photograph worth having. So the camera keeps a running average of what the scene usually looks like and compares against that.", "Text", 
          ExpressionUUID -> "567fb686-b98d-4832-91e5-a98cc8a28c6d"], 
-        Cell["step7 updates that average at two speeds: slowly everywhere, \
-including underneath whatever is moving, and four times faster where nothing \
-is moving. The second rate keeps up with the sun; the first makes sure a \
-mistake can never become permanent. An earlier version learned only where \
-nothing moved, and a pixel that once looked different stayed different for \
-ever \[LongDash] camera shake wrote a permanent scar along every edge in the \
-scene.", "Text", ExpressionUUID -> "afb2c40c-4deb-467a-9b56-83f8b8452afe"], 
-        Cell[CellGroupData[{Cell["prepare[file_] := \
-GaussianFilter[ColorConvert[\n   ImageResize[Import[file], {640, 480}], \
-\"Grayscale\"], 5];\n\nbgFiles = FileNames[\"bg_motion_*.jpg\", \
-data];\nframes = prepare /@ bgFiles;\n\nalphaQuiet = 0.25/10.0;   (* \
-LOOP_DELAY / BACKGROUND_TAU *)\nalphaBusy = 0.25/40.0;    (* LOOP_DELAY / \
-BACKGROUND_TAU_BUSY *)\n\nbackground = Fold[\n  ImageAdd[ImageMultiply[#1, 1 \
-- alphaQuiet - alphaBusy],\n           ImageMultiply[#2, alphaQuiet + \
-alphaBusy]] &,\n  First[frames], Rest[frames]];\nbackground", "Input", 
+        Cell["step7 updates that average at two speeds: slowly everywhere, including underneath whatever is moving, and four times faster where nothing is moving. The second rate keeps up with the sun; the first makes sure a mistake can never become permanent. An earlier version learned only where nothing moved, and a pixel that once looked different stayed different for ever \[LongDash] camera shake wrote a permanent scar along every edge in the scene.", "Text", ExpressionUUID -> "afb2c40c-4deb-467a-9b56-83f8b8452afe"], 
+        Cell[CellGroupData[{Cell["prepare[file_] := GaussianFilter[ColorConvert[\n   ImageResize[Import[file], {640, 480}], \"Grayscale\"], 5];\n\nbgFiles = FileNames[\"bg_motion_*.jpg\", data];\nframes = prepare /@ bgFiles;\n\nalphaQuiet = 0.25/10.0;   (* LOOP_DELAY / BACKGROUND_TAU *)\nalphaBusy = 0.25/40.0;    (* LOOP_DELAY / BACKGROUND_TAU_BUSY *)\n\nbackground = Fold[\n  ImageAdd[ImageMultiply[#1, 1 - alphaQuiet - alphaBusy],\n           ImageMultiply[#2, alphaQuiet + alphaBusy]] &,\n  First[frames], Rest[frames]];\nbackground", "Input", 
             ExpressionUUID -> "953b7d54-f0ab-4ddf-a9b4-e3ee753ca93a"]}, 
-          Open]], Cell["A background is only good for the moment it was \
-learned. Comparing a frame against one built minutes earlier makes the whole \
-scene look like it moved, which is why each test below uses the training \
-burst recorded just before it.", "Text", ExpressionUUID -> 
+          Open]], Cell["A background is only good for the moment it was learned. Comparing a frame against one built minutes earlier makes the whole scene look like it moved, which is why each test below uses the training burst recorded just before it.", "Text", ExpressionUUID -> 
           "54de49c2-aa7b-4f76-9609-324da919abcb"]}, Open]], 
      Cell[CellGroupData[{Cell["5. Difference and threshold", "Section", 
          ExpressionUUID -> "efff922e-0e59-424b-be4e-5c38c302cb70"], 
-        Cell["Two numbers come out of the subtraction. The signed median \
-tells us whether the light changed \[LongDash] noise pushes as many pixels up \
-as down and cancels to zero, while a cloud pushes every pixel the same way. \
-The unsigned median says how grainy the frame is, and raises the threshold by \
-itself on a noisy evening.", "Text", ExpressionUUID -> 
+        Cell["Two numbers come out of the subtraction. The signed median tells us whether the light changed \[LongDash] noise pushes as many pixels up as down and cancels to zero, while a cloud pushes every pixel the same way. The unsigned median says how grainy the frame is, and raises the threshold by itself on a noisy evening.", "Text", ExpressionUUID -> 
           "c59aaabc-11ee-4328-b0fc-c1a7e1d252b6"], 
-        Cell[CellGroupData[{Cell["motion = prepare[FileNameJoin[{data, \
-\"motion_sandal.jpg\"}]];\n\nsigned = ImageData[motion] - \
-ImageData[background];\nshift = 255 Median[Flatten[signed]];\nnoise = 255 \
-Median[Abs[Flatten[signed]]];\nthreshold = Clip[Round[4 noise + 5], {25, \
-75}];\n{shift, noise, threshold}", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["motion = prepare[FileNameJoin[{data, \"motion_sandal.jpg\"}]];\n\nsigned = ImageData[motion] - ImageData[background];\nshift = 255 Median[Flatten[signed]];\nnoise = 255 Median[Abs[Flatten[signed]]];\nthreshold = Clip[Round[4 noise + 5], {25, 75}];\n{shift, noise, threshold}", "Input", ExpressionUUID -> 
              "eaf9668c-326c-4f89-9974-71ae357fea46"]}, Open]], 
-        Cell[CellGroupData[{Cell["difference = ImageDifference[motion, \
-background];\nmask = Binarize[difference, \
-threshold/255];\nGraphicsRow[{motion, background, ImageAdjust[difference], \
-mask}, ImageSize -> 900]", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["difference = ImageDifference[motion, background];\nmask = Binarize[difference, threshold/255];\nGraphicsRow[{motion, background, ImageAdjust[difference], mask}, ImageSize -> 900]", "Input", ExpressionUUID -> 
              "18f08b0e-3d6e-4149-a8d4-77fbbeb62019"]}, Open]]}, Open]], 
      Cell[CellGroupData[{Cell["6. Cleaning up", "Section", 
          ExpressionUUID -> "69c65f90-3d09-4869-836a-1665ae861dcd"], 
-        Cell["Opening rubs out lone speckles. Closing then joins nearby \
-fragments into one shape, so an animal broken up by a shadow becomes a single \
-blob again. Closing rather than a plain dilation matters: dilating alone \
-would inflate every blob, and the size thresholds afterwards would mean far \
-less than they say.", "Text", ExpressionUUID -> 
+        Cell["Opening rubs out lone speckles. Closing then joins nearby fragments into one shape, so an animal broken up by a shadow becomes a single blob again. Closing rather than a plain dilation matters: dilating alone would inflate every blob, and the size thresholds afterwards would mean far less than they say.", "Text", ExpressionUUID -> 
           "c3352c99-560a-4c19-8d76-439e1ae795ce"], 
-        Cell[CellGroupData[{Cell["opened = Opening[mask, \
-BoxMatrix[3]];\nclosed = Closing[opened, BoxMatrix[7]];\nGraphicsRow[{mask, \
-opened, closed}, ImageSize -> 900,\n  PlotLabel -> \"raw        opened        \
-then closed\"]", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["opened = Opening[mask, BoxMatrix[3]];\nclosed = Closing[opened, BoxMatrix[7]];\nGraphicsRow[{mask, opened, closed}, ImageSize -> 900,\n  PlotLabel -> \"raw        opened        then closed\"]", "Input", ExpressionUUID -> 
              "47013ffd-4df4-4b8e-a044-b5036a4687b2"]}, Open]]}, Open]], 
      Cell[CellGroupData[{Cell["7. Connected pixels", "Section", 
          ExpressionUUID -> "90548ff2-59b8-41b6-b58d-abc29fc40b7a"], 
-        Cell["Twenty thousand pixels scattered across a windy treeline and \
-twenty thousand in one solid lump look identical to a counter, but only one \
-of them is an animal. MorphologicalComponents groups touching pixels; \
-ComponentMeasurements returns everything step7 needs in a single call.", 
+        Cell["Twenty thousand pixels scattered across a windy treeline and twenty thousand in one solid lump look identical to a counter, but only one of them is an animal. MorphologicalComponents groups touching pixels; ComponentMeasurements returns everything step7 needs in a single call.", 
          "Text", ExpressionUUID -> "7f8c9578-0e01-4a69-ab4a-7287d6980db1"], 
-        Cell[CellGroupData[{Cell["components = \
-MorphologicalComponents[closed];\nmeasures = \
-ComponentMeasurements[components,\n   {\"Area\", \"BoundingBox\", \
-\"Centroid\", \"Elongation\"}];\nSortBy[measures, -#[[2, 1]] &] // Short", 
+        Cell[CellGroupData[{Cell["components = MorphologicalComponents[closed];\nmeasures = ComponentMeasurements[components,\n   {\"Area\", \"BoundingBox\", \"Centroid\", \"Elongation\"}];\nSortBy[measures, -#[[2, 1]] &] // Short", 
             "Input", ExpressionUUID -> 
              "f96ad9f0-af8a-48df-906e-7413315702cf"]}, Open]], 
-        Cell[CellGroupData[{Cell["largest = First[SortBy[measures, -#[[2, 1]] \
-&]];\n{area, box, centroid, elongation} = largest[[2]];\n{width, height} = \
-Abs[box[[2]] - box[[1]]];\nextent = area/(width height);\naspect = Max[width, \
-height]/Min[width, height];\nGrid[{{\"area\", area}, {\"fraction of frame\", \
-N[area/(640 480)]},\n      {\"extent\", N[extent]}, {\"aspect\", \
-N[aspect]},\n      {\"strong? (>= 1320 px)\", area >= 1320}}, Frame -> All]", 
+        Cell[CellGroupData[{Cell["largest = First[SortBy[measures, -#[[2, 1]] &]];\n{area, box, centroid, elongation} = largest[[2]];\n{width, height} = Abs[box[[2]] - box[[1]]];\nextent = area/(width height);\naspect = Max[width, height]/Min[width, height];\nGrid[{{\"area\", area}, {\"fraction of frame\", N[area/(640 480)]},\n      {\"extent\", N[extent]}, {\"aspect\", N[aspect]},\n      {\"strong? (>= 1320 px)\", area >= 1320}}, Frame -> All]", 
             "Input", ExpressionUUID -> 
              "362eba5c-f4f9-4fd7-bcb4-9a76ba28389d"]}, Open]], 
-        Cell[CellGroupData[{Cell["HighlightImage[ImageResize[Import[FileNameJ\
-oin[{data, \"motion_sandal.jpg\"}]],\n   {640, 480}], {\"Boundary\", \
-DeleteSmallComponents[closed, 599]},\n  ImageSize -> 600]", "Input", 
+        Cell[CellGroupData[{Cell["HighlightImage[ImageResize[Import[FileNameJoin[{data, \"motion_sandal.jpg\"}]],\n   {640, 480}], {\"Boundary\", DeleteSmallComponents[closed, 599]},\n  ImageSize -> 600]", "Input", 
             ExpressionUUID -> "41ce75b2-3e07-4ae4-b533-6bf166e8cb51"]}, 
           Open]]}, Open]], Cell[CellGroupData[
        {Cell["8. The whole checklist", "Section", ExpressionUUID -> 
-          "60b1d163-a818-4b04-8024-ed65084bb26a"], Cell["step7 applies eight \
-rules in order and the first one that matches wins. Rules 1 to 4 reject; 5, 6 \
-and 7 keep the photograph; 8 waits for the next frame.", "Text", 
+          "60b1d163-a818-4b04-8024-ed65084bb26a"], Cell["step7 applies eight rules in order and the first one that matches wins. Rules 1 to 4 reject; 5, 6 and 7 keep the photograph; 8 waits for the next frame.", "Text", 
          ExpressionUUID -> "2218c154-bf7c-4c29-be4b-04be7edde053"], 
-        Cell[CellGroupData[{Cell["decide[file_, bg_] := Module[\n  {g, \
-signedD, shiftD, noiseD, thr, m, comps, ms, a, w, h, ext, asp, frac},\n  g = \
-prepare[file];\n  signedD = ImageData[g] - ImageData[bg];\n  shiftD = 255 \
-Median[Flatten[signedD]];\n  noiseD = 255 Median[Abs[Flatten[signedD]]];\n  \
-thr = Clip[Round[4 noiseD + 5], {25, 75}];\n  m = \
-Closing[Opening[Binarize[ImageDifference[g, bg], thr/255],\n      \
-BoxMatrix[3]], BoxMatrix[7]];\n  comps = MorphologicalComponents[m];\n  ms = \
-ComponentMeasurements[comps, {\"Area\", \"BoundingBox\"}];\n  If[ms === {}, \
-Return[{FileBaseName[file], 0, shiftD, \"nothing moved\"}]];\n  {a, box} = \
-First[SortBy[ms, -#[[2, 1]] &]][[2]];\n  {w, h} = Abs[box[[2]] - box[[1]]];\n \
- ext = a/(w h); asp = Max[w, h]/Min[w, h]; frac = a/(640 480);\n  \
-{FileBaseName[file], a, shiftD,\n   Which[\n    Abs[shiftD] >= 10, \"lighting \
-change\",\n    a >= 1320, \"STRONG MOTION - save\",\n    a >= 599 && asp <= \
-8, \"small - needs a second look\",\n    True, \"too small / wrong \
-shape\"]}];\n\nGrid[Prepend[\n  {decide[FileNameJoin[{data, \
-\"motion_sandal.jpg\"}], background],\n   decide[FileNameJoin[{data, \
-\"lighting_change.jpg\"}], background]},\n  {\"frame\", \"blob\", \"signed \
-shift\", \"verdict\"}], Frame -> All]", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["decide[file_, bg_] := Module[\n  {g, signedD, shiftD, noiseD, thr, m, comps, ms, a, w, h, ext, asp, frac},\n  g = prepare[file];\n  signedD = ImageData[g] - ImageData[bg];\n  shiftD = 255 Median[Flatten[signedD]];\n  noiseD = 255 Median[Abs[Flatten[signedD]]];\n  thr = Clip[Round[4 noiseD + 5], {25, 75}];\n  m = Closing[Opening[Binarize[ImageDifference[g, bg], thr/255],\n      BoxMatrix[3]], BoxMatrix[7]];\n  comps = MorphologicalComponents[m];\n  ms = ComponentMeasurements[comps, {\"Area\", \"BoundingBox\"}];\n  If[ms === {}, Return[{FileBaseName[file], 0, shiftD, \"nothing moved\"}]];\n  {a, box} = First[SortBy[ms, -#[[2, 1]] &]][[2]];\n  {w, h} = Abs[box[[2]] - box[[1]]];\n  ext = a/(w h); asp = Max[w, h]/Min[w, h]; frac = a/(640 480);\n  {FileBaseName[file], a, shiftD,\n   Which[\n    Abs[shiftD] >= 10, \"lighting change\",\n    a >= 1320, \"STRONG MOTION - save\",\n    a >= 599 && asp <= 8, \"small - needs a second look\",\n    True, \"too small / wrong shape\"]}];\n\nGrid[Prepend[\n  {decide[FileNameJoin[{data, \"motion_sandal.jpg\"}], background],\n   decide[FileNameJoin[{data, \"lighting_change.jpg\"}], background]},\n  {\"frame\", \"blob\", \"signed shift\", \"verdict\"}], Frame -> All]", "Input", ExpressionUUID -> 
              "eeee2f9e-ba07-48b7-98aa-acd202072b71"]}, Open]], 
-        Cell["The numbers here are close to the Python notebook's but not \
-identical \[Dash] Wolfram and OpenCV resize, blur and threshold in slightly \
-different ways, so a blob measured at 5,375 pixels there comes out near 6,850 \
-here. That is worth knowing before treating either as ground truth: the shape \
-of the answer is what carries over between the two, not the last digit. The \
-camera itself uses the OpenCV numbers.", "Text", ExpressionUUID -> 
-          "0c78a659-8522-4218-bc4a-ed29aebcc644"], Cell["The sandal is a big \
-solid blob and is kept without hesitating. The frame two seconds later is the \
-interesting one: the sun came out at the same moment, so more than half the \
-frame moved the same way at once and rule 2 fires first. The real camera \
-saved it anyway, because its background had been learning continuously \
-through those two seconds \[LongDash] ours has been frozen since the burst \
-ended. That is a limitation of the notebook, not of the program.", "Text", 
+        Cell["The numbers here are close to the Python notebook's but not identical \[Dash] Wolfram and OpenCV resize, blur and threshold in slightly different ways, so a blob measured at 5,375 pixels there comes out near 6,850 here. That is worth knowing before treating either as ground truth: the shape of the answer is what carries over between the two, not the last digit. The camera itself uses the OpenCV numbers.", "Text", ExpressionUUID -> 
+          "0c78a659-8522-4218-bc4a-ed29aebcc644"], Cell["The sandal is a big solid blob and is kept without hesitating. The frame two seconds later is the interesting one: the sun came out at the same moment, so more than half the frame moved the same way at once and rule 2 fires first. The real camera saved it anyway, because its background had been learning continuously through those two seconds \[LongDash] ours has been frozen since the burst ended. That is a limitation of the notebook, not of the program.", "Text", 
          ExpressionUUID -> "053eda12-e410-4251-89ab-525386e9b1e7"]}, Open]], 
      Cell[CellGroupData[
        {Cell["9. What Wolfram makes easy that OpenCV does not", "Section", 
          ExpressionUUID -> "bbade15c-23e7-4764-b7c4-9149e03de1fa"], 
-        Cell["A few things here are one built-in where the camera program \
-needs a dozen lines. These are worth knowing about when trying a new idea:", 
+        Cell["A few things here are one built-in where the camera program needs a dozen lines. These are worth knowing about when trying a new idea:", 
          "Text", ExpressionUUID -> "d4af1b36-be76-4fb1-a0e5-509d9c547f4e"], 
-        Cell[CellGroupData[{Cell["(* everything step7 computes about a blob, \
-in one call *)\nComponentMeasurements[components,\n  {\"Area\", \
-\"Elongation\", \"Circularity\", \"Eccentricity\", \"PerimeterLength\"}] // \
-Short", "Input", ExpressionUUID -> "481684c0-d606-4341-8e2b-5363ff914a76"]}, 
-          Open]], Cell[CellGroupData[{Cell["(* drop small blobs without \
-writing a loop *)\nGraphicsRow[{closed, DeleteSmallComponents[closed, 599]}, \
-ImageSize -> 700]", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["(* everything step7 computes about a blob, in one call *)\nComponentMeasurements[components,\n  {\"Area\", \"Elongation\", \"Circularity\", \"Eccentricity\", \"PerimeterLength\"}] // Short", "Input", ExpressionUUID -> "481684c0-d606-4341-8e2b-5363ff914a76"]}, 
+          Open]], Cell[CellGroupData[{Cell["(* drop small blobs without writing a loop *)\nGraphicsRow[{closed, DeleteSmallComponents[closed, 599]}, ImageSize -> 700]", "Input", ExpressionUUID -> 
              "2ebdb3ad-2c7a-403c-b1cc-4e7c4d98a978"]}, Open]], 
-        Cell[CellGroupData[{Cell["(* follow points between two frames - the \
-basis of optical flow *)\nImageFeatureTrack[{prepare[FileNameJoin[{data, \
-\"motion_sandal.jpg\"}]],\n                  prepare[FileNameJoin[{data, \
-\"lighting_change.jpg\"}]]}] // Short", "Input", ExpressionUUID -> 
+        Cell[CellGroupData[{Cell["(* follow points between two frames - the basis of optical flow *)\nImageFeatureTrack[{prepare[FileNameJoin[{data, \"motion_sandal.jpg\"}]],\n                  prepare[FileNameJoin[{data, \"lighting_change.jpg\"}]]}] // Short", "Input", ExpressionUUID -> 
              "21235844-27cc-4996-b430-b22cb0c78a41"]}, Open]]}, Open]], 
      Cell[CellGroupData[{Cell["Future work", "Section", 
          ExpressionUUID -> "45fc21e1-ae86-4352-a2b0-2284442bd808"], 
-        Cell["Everything above is deliberately simple arithmetic. That suits \
-a camera that must run all day on a Raspberry Pi, and every line of it can be \
-understood. But it is the bottom rung of a long ladder.", "Text", 
+        Cell["Everything above is deliberately simple arithmetic. That suits a camera that must run all day on a Raspberry Pi, and every line of it can be understood. But it is the bottom rung of a long ladder.", "Text", 
          ExpressionUUID -> "3e4d14ef-c1e9-42cc-969d-7772bd0d4400"], 
-        Cell["Statistical background models. Instead of one average per \
-pixel, learn a distribution per pixel, so a patch of shimmering leaves \
-naturally demands a bigger deviation before it counts as motion. OpenCV ships \
-MOG2 and KNN as one-liners. On our own recorded frames MOG2 caught only 41% \
-of genuine motion against 100% for the current approach, so it needs tuning \
-against our data rather than adopting wholesale.", "Text", 
+        Cell["Statistical background models. Instead of one average per pixel, learn a distribution per pixel, so a patch of shimmering leaves naturally demands a bigger deviation before it counts as motion. OpenCV ships MOG2 and KNN as one-liners. On our own recorded frames MOG2 caught only 41% of genuine motion against 100% for the current approach, so it needs tuning against our data rather than adopting wholesale.", "Text", 
          ExpressionUUID -> "61e09b47-8bd4-487d-9565-10c26074e518"], 
-        Cell["Colour, and the shadow problem. The one false positive we have \
-deliberately given up on is a cloud shadow. A shadow keeps its colour and \
-changes only its brightness, so comparing hue rather than brightness \
-separates the two. The training frames are now stored in YUV rather than \
-greyscale specifically so this can be tried on data already collected.", 
+        Cell["Colour, and the shadow problem. The one false positive we have deliberately given up on is a cloud shadow. A shadow keeps its colour and changes only its brightness, so comparing hue rather than brightness separates the two. The training frames are now stored in YUV rather than greyscale specifically so this can be tried on data already collected.", 
          "Text", ExpressionUUID -> "4db07105-0a3f-40b8-8e00-925bc490ebf6"], 
-        Cell["Optical flow. Rather than asking whether a pixel changed, ask \
-where it went. A fern oscillates about a fixed point while an animal \
-translates across the frame, which is exactly the pair our persistence rule \
-could not separate. ImageFeatureTrack above is the Wolfram entry point; \
-OpenCV has calcOpticalFlowPyrLK for sparse flow and Farneback for dense.", 
+        Cell["Optical flow. Rather than asking whether a pixel changed, ask where it went. A fern oscillates about a fixed point while an animal translates across the frame, which is exactly the pair our persistence rule could not separate. ImageFeatureTrack above is the Wolfram entry point; OpenCV has calcOpticalFlowPyrLK for sparse flow and Farneback for dense.", 
          "Text", ExpressionUUID -> "ac5cf04d-c2b4-4133-9d3c-7e00ff3fc99a"], 
-        Cell["Three-frame differencing. Comparing frame n with both n-1 and \
-n+1 and taking the intersection removes the ghost a moving object leaves \
-behind. Cheap, and a natural next experiment.", "Text", 
+        Cell["Three-frame differencing. Comparing frame n with both n-1 and n+1 and taking the intersection removes the ghost a moving object leaves behind. Cheap, and a natural next experiment.", "Text", 
          ExpressionUUID -> "5df31307-412c-489c-a880-b2badd7b591c"], 
-        Cell["Motion vectors from the video encoder. The Pi's hardware H.264 \
-encoder already computes motion vectors for every macroblock as a side effect \
-of compression. Reading them costs almost nothing, and published work has \
-used exactly this for video camera traps. Probably the best effort-to-reward \
-option on this hardware.", "Text", ExpressionUUID -> 
-          "40a12fb3-44eb-4da2-a664-e92d92f1060e"], Cell["Learned detection \
-on-device. The IMX500 can run a network we choose, not just the stock \
-80-object one. A small model trained on our own frames \[LongDash] fern \
-versus animal, on our patio, in our light \[LongDash] would sidestep the \
-hand-tuned thresholds entirely. This is what the training bursts are for.", 
+        Cell["Motion vectors from the video encoder. The Pi's hardware H.264 encoder already computes motion vectors for every macroblock as a side effect of compression. Reading them costs almost nothing, and published work has used exactly this for video camera traps. Probably the best effort-to-reward option on this hardware.", "Text", ExpressionUUID -> 
+          "40a12fb3-44eb-4da2-a664-e92d92f1060e"], Cell["Learned detection on-device. The IMX500 can run a network we choose, not just the stock 80-object one. A small model trained on our own frames \[LongDash] fern versus animal, on our patio, in our light \[LongDash] would sidestep the hand-tuned thresholds entirely. This is what the training bursts are for.", 
          "Text", ExpressionUUID -> "673fdaa4-315f-4212-95ce-2c388cd078ed"], 
-        Cell["And the thing no algorithm fixes: these cameras are blind after \
-dusk, because the AI Camera has no infra-red illumination. Much of the \
-wildlife worth photographing is nocturnal. That needs different hardware, not \
-better code.", "Text", ExpressionUUID -> 
+        Cell["And the thing no algorithm fixes: these cameras are blind after dusk, because the AI Camera has no infra-red illumination. Much of the wildlife worth photographing is nocturnal. That needs different hardware, not better code.", "Text", ExpressionUUID -> 
           "27a78f0a-1835-452c-b3d3-6d557c7ed689"]}, Open]]}, Open]]}, 
  WindowSize -> {606, 604.5}, WindowMargins -> 
   {{10.5, Automatic}, {Automatic, 28.5}}, FrontEndVersion -> 
