@@ -117,11 +117,67 @@ full-resolution colour frame lands every 10 seconds.
 
 | | size | rate | per 30 s burst |
 |---|---|---|---|
-| lores 320x240 grey PNG | 55 KB | every check (4 Hz) | 120 frames, 6.6 MB |
+| lores 320x240 YUV420 PNG | 70 KB | every check (4 Hz) | 120 frames, 8.4 MB |
 | full 2028x1520 colour JPEG | 690 KB | every 10 s | 3 frames, 2.1 MB |
 
-Hourly bursts then cost about **9 MB an hour, 212 MB a day** --- against 6.1 GB
+Hourly bursts then cost about **10 MB an hour, 250 MB a day** --- against 6.1 GB
 a day for the original settings, for strictly better replay data.
+
+### Why the lores frames keep their colour
+
+Today's rules read brightness only, so the obvious thing is to store the Y plane
+and nothing else. Measured on a real frame, that would save 54 KB against 70 KB
+--- because YUV420 keeps the two colour planes at quarter resolution, the whole
+buffer costs only **30% more than grey alone**, not three times.
+
+Thirty percent is worth paying, because colour is the one thing that cannot be
+added back later:
+
+- **A shadow keeps its colour and only changes its brightness.** That is the
+  standard way to separate a cloud crossing the patio from an animal walking
+  across it --- it is what `MOG2`'s `detectShadows` does --- and cloud shadow is
+  precisely the false positive we decided to live with. Stored in grey, that
+  decision is permanent. Stored in YUV, it can be revisited using frames we
+  have already collected.
+- Green leaves against a brown animal separate far better in colour than in grey.
+- Any learned model we might try later will want colour.
+
+The file is the raw YUV420 buffer written as a lossless PNG, so it reads back as
+a tall thin grey image:
+
+```python
+buf    = cv2.imread(name, cv2.IMREAD_GRAYSCALE)
+grey   = buf[:240]                                  # exactly what the rules saw
+colour = cv2.cvtColor(buf, cv2.COLOR_YUV2BGR_I420)  # the full frame
+```
+
+Verified round trip: the buffer reads back byte-identical, and blurring
+`buf[:240]` offline produces exactly the array the live loop worked from.
+
+### Resolution: 320x240 is a range limit, not an accuracy limit
+
+Worth writing down, because it is not obvious. More pixels do **not** separate
+animals from vegetation any better --- both scale with resolution, so the ratio
+between them is unchanged:
+
+| lores width | fern | real motion | ratio |
+|---|---|---|---|
+| 320 | ~95 px | ~8,960 px | 94x |
+| 640 | ~380 px | ~35,840 px | 94x |
+| 1280 | ~1,520 px | ~143,360 px | 94x |
+
+What resolution does buy is reach at the small end, because the 3x3 opening
+kernel is a fixed size and erases anything only a few pixels across:
+
+| lores width | deer at 30 m | squirrel at 10 m |
+|---|---|---|
+| 320 | 14x9 px | 7x4 px --- marginal |
+| 640 | 28x18 px | 14x8 px |
+
+So 320x240 is right for a camera watching a patio or a feeding spot. A camera
+aimed down a long trail is the case for raising its `LORES_SIZE` to 640x480 ---
+about 3.5x the storage, buying distance rather than accuracy. Decide it per
+site, from that site's own `--record` data.
 
 ### Storage budget
 
