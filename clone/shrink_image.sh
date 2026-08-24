@@ -28,14 +28,18 @@
 # or with the wrong number, so each is computed from what the filesystem
 # reports AFTER the resize, never from what we asked for.
 #
+# THIS SCRIPT DOES NOT BURN ANYTHING. It edits the image FILE, in place.
+# --fit names a card only so its capacity can be read; nothing is ever
+# written to it. Burn the result afterwards with burn_image.sh.
+#
 # Usage:
-#   sudo ./shrink_image.sh [options] IMAGE [DEVICE]
+#   sudo ./shrink_image.sh [options] IMAGE
 #
 # Examples:
-#   sudo ./shrink_image.sh ~/wc10.img /dev/sda      # fit this card
-#   sudo ./shrink_image.sh --size 29G ~/wc10.img    # fit a size
-#   sudo ./shrink_image.sh --minimal ~/wc10.img     # as small as it goes
-#   sudo ./shrink_image.sh --dry-run ~/wc10.img /dev/sda
+#   sudo ./shrink_image.sh --fit /dev/sda ~/wc10.img       # fit that card
+#   sudo ./shrink_image.sh --size 29G ~/wc10.img           # fit a size
+#   sudo ./shrink_image.sh --minimal ~/wc10.img            # as small as it goes
+#   sudo ./shrink_image.sh --fit /dev/sda --output ~/small.img ~/wc10.img
 
 set -euo pipefail
 
@@ -51,15 +55,19 @@ usage() {
     cat <<EOF
 Shrink a wildlife-camera image so it fits a smaller card.
 
+This does NOT burn anything. It rewrites the image FILE, in place, and
+leaves it for burn_image.sh to write to a card afterwards.
+
 Usage:
-  sudo $PROG [options] IMAGE [DEVICE]
+  sudo $PROG [options] IMAGE
 
 Arguments:
-  IMAGE    the image file to shrink, in place (never a device)
-  DEVICE   card it has to fit, e.g. /dev/sda -- its size is read and used
+  IMAGE    the image file to shrink, IN PLACE (use --output to keep it)
 
 Options:
-  --size SIZE     fit this many bytes instead of a device (accepts K/M/G)
+  --fit DEVICE    shrink until it fits this card, e.g. /dev/sda.  Only the
+                  card's capacity is read; nothing is written to it
+  --size SIZE     fit this many bytes instead of a card (accepts K/M/G)
   --minimal       shrink as far as the filesystem allows, ignoring the target
   --margin SIZE   keep this much spare so the image also fits a card that is
                   a little smaller (default ${DEFAULT_MARGIN_HUMAN})
@@ -81,6 +89,7 @@ DEFAULT_MARGIN_HUMAN="16MiB"
 # --------------------------------------------------------------------------
 
 TARGET_SIZE=""
+DEVICE=""
 MINIMAL=0
 MARGIN=$DEFAULT_MARGIN
 OUTPUT=""
@@ -96,10 +105,15 @@ to_bytes() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --size)     TARGET_SIZE=$(to_bytes "${2:?--size needs a value}"); shift 2 ;;
+        --fit)      [ $# -ge 2 ] || die "--fit needs a device, e.g. --fit /dev/sda"
+                    DEVICE="$2"; shift 2 ;;
+        --size)     [ $# -ge 2 ] || die "--size needs a value, e.g. --size 29G"
+                    TARGET_SIZE=$(to_bytes "$2"); shift 2 ;;
         --minimal)  MINIMAL=1; shift ;;
-        --margin)   MARGIN=$(to_bytes "${2:?--margin needs a value}"); shift 2 ;;
-        --output)   OUTPUT="${2:?--output needs a filename}"; shift 2 ;;
+        --margin)   [ $# -ge 2 ] || die "--margin needs a value, e.g. --margin 16M"
+                    MARGIN=$(to_bytes "$2"); shift 2 ;;
+        --output)   [ $# -ge 2 ] || die "--output needs a filename"
+                    OUTPUT="$2"; shift 2 ;;
         -n|--dry-run) DRY_RUN=1; shift ;;
         -y|--yes)   ASSUME_YES=1; shift ;;
         -h|--help)  usage; exit 0 ;;
@@ -109,9 +123,21 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ "${#POSITIONAL[@]}" -ge 1 ] || { usage; exit 2; }
+# burn_image.sh takes IMAGE and DEVICE as two positionals, so that habit
+# turns up here.  Say what to do instead, rather than printing the usage
+# and letting someone guess which half was wrong.
+for arg in ${POSITIONAL+"${POSITIONAL[@]}"}; do
+    case "$arg" in
+        /dev/*) die "$arg is a card, and this script never writes to one. Pass only the image FILE and name the card with --fit:  $PROG --fit $arg IMAGE" ;;
+    esac
+done
+
+if [ "${#POSITIONAL[@]}" -ne 1 ]; then
+    [ "${#POSITIONAL[@]}" -gt 1 ] && warn "this takes one image; --fit names the card"
+    usage
+    exit 2
+fi
 IMAGE=${POSITIONAL[0]}
-DEVICE=${POSITIONAL[1]:-}
 
 # --------------------------------------------------------------------------
 # Refuse anything that is not a plain file
@@ -122,10 +148,10 @@ DEVICE=${POSITIONAL[1]:-}
 [ -f "$IMAGE" ] || die "$IMAGE is not a regular file"
 
 if [ -n "$DEVICE" ] && [ -n "$TARGET_SIZE" ]; then
-    die "give either a DEVICE or --size, not both"
+    die "give either --fit or --size, not both"
 fi
 if [ -z "$DEVICE" ] && [ -z "$TARGET_SIZE" ] && [ "$MINIMAL" -ne 1 ]; then
-    die "say what it has to fit: a DEVICE, or --size, or --minimal"
+    die "say what it has to fit: --fit DEVICE, or --size SIZE, or --minimal"
 fi
 
 # --------------------------------------------------------------------------
@@ -135,13 +161,14 @@ fi
 if [ "$(id -u)" -ne 0 ]; then
     msg "re-running under sudo (loop devices and e2fsck need root)"
     reexec=()
+    [ -n "$DEVICE" ]         && reexec+=(--fit "$DEVICE")
     [ -n "$TARGET_SIZE" ]    && reexec+=(--size "$TARGET_SIZE")
     [ "$MINIMAL" -eq 1 ]     && reexec+=(--minimal)
     [ "$MARGIN" -ne "$DEFAULT_MARGIN" ] && reexec+=(--margin "$MARGIN")
     [ -n "$OUTPUT" ]         && reexec+=(--output "$OUTPUT")
     [ "$DRY_RUN" -eq 1 ]     && reexec+=(--dry-run)
     [ "$ASSUME_YES" -eq 1 ]  && reexec+=(--yes)
-    exec sudo -- "$0" "${reexec[@]}" -- "$IMAGE" ${DEVICE:+"$DEVICE"}
+    exec sudo -- "$0" "${reexec[@]}" -- "$IMAGE"
 fi
 
 for tool in losetup sfdisk e2fsck resize2fs dumpe2fs truncate blkid numfmt findmnt; do
@@ -158,7 +185,7 @@ if [ -n "$DEVICE" ]; then
     [ -b "$(readlink -f -- "$DEVICE")" ] || die "$DEVICE is not a block device"
     DEV=$(readlink -f -- "$DEVICE")
     TARGET_SIZE=$(blockdev --getsize64 "$DEV")
-    msg "$DEVICE holds $(human "$TARGET_SIZE")"
+    msg "$DEVICE holds $(human "$TARGET_SIZE") (reading its size only; nothing is written to it)"
 
     # We only read its size, but say so plainly if it is in use.
     for part in $(lsblk -lno NAME -- "$DEV" | tail -n +2); do
@@ -297,6 +324,12 @@ NEW_PART_SECTORS=$(( NEW_BLOCKS * BLOCK_SIZE / SECTOR ))
 NEW_IMG_BYTES=$(( (PART_START + NEW_PART_SECTORS) * SECTOR ))
 
 echo
+if [ -n "$OUTPUT" ]; then
+    echo "  WILL REWRITE : $WORK  (a copy; $IMAGE is left alone)"
+else
+    echo "  WILL REWRITE : $WORK  (in place)"
+fi
+echo "  no card is written to by this script."
 echo "  image        : $WORK"
 echo "  now          : $(human "$IMG_BYTES")"
 echo "  after        : $(human "$NEW_IMG_BYTES")   (saving $(human $((IMG_BYTES - NEW_IMG_BYTES))))"
