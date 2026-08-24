@@ -1,18 +1,21 @@
 # Cloning a personalized camera image
 
-Three helpers, all for a **Linux laptop**, one per step of the round trip:
+Four helpers, all for a **Linux laptop**, covering the round trip:
 
 - [`capture_image.sh`](capture_image.sh) --- read the master camera's SD card
   into a master image file.
+- [`shrink_image.sh`](shrink_image.sh) --- shrink an image so it fits a smaller
+  card (never touches a card itself).
 - [`clone_image.sh`](clone_image.sh) --- turn the master image into a
   personalized image file for one camera (never touches a card).
 - [`burn_image.sh`](burn_image.sh) --- write an image to an SD card, with
   safety checks so it only ever writes to a removable card.
 
 ```text
-master card  --capture_image.sh-->  master.img
-master.img   --clone_image.sh---->  wildlifecam7.img
-wildlifecam7.img --burn_image.sh->  a new card
+master card      --capture_image.sh-->  master.img
+master.img       --shrink_image.sh-->   master.img   (optional, smaller)
+master.img       --clone_image.sh--->   wildlifecam7.img
+wildlifecam7.img --burn_image.sh---->   a new card
 ```
 
 ## Capturing the master image
@@ -111,6 +114,65 @@ done
 | --- | --- |
 | `-H`, `--hostname NAME` | Hostname for this clone, e.g. `wildlifecam7` (required). |
 | `-f`, `--force` | Overwrite the output image if it already exists. |
+| `-h`, `--help` | Show usage. |
+
+## Shrinking an image to fit a smaller card
+
+Two cards sold as "32 GB" are rarely the same number of bytes, so an image read
+off one may miss fitting another by a hair.
+[`shrink_image.sh`](shrink_image.sh) shrinks the image's last partition --- the
+Linux root filesystem --- until the whole file fits the card you actually have,
+and leaves the FAT boot partition alone.
+
+```bash
+sudo ./shrink_image.sh --dry-run ~/wc10.img /dev/sda   # what would it do?
+sudo ./shrink_image.sh ~/wc10.img /dev/sda             # do it
+```
+
+Always run `--dry-run` first. It prints the whole plan --- current size, target
+size, how far the filesystem can go --- and changes nothing.
+
+It only ever opens an image **file**; it refuses a block device outright, so
+unlike `burn_image.sh` there is no way for it to write over a disk. The risk
+here is a different one: a botched resize gives you a quietly corrupt image
+that you then copy to ten cameras. So it shrinks in the careful order --- fsck,
+ask `resize2fs` how small the data could possibly go, shrink the filesystem,
+shrink the partition to match **what the filesystem actually became** rather
+than what was asked for, truncate the file --- and then proves the result by
+running `e2fsck` again, mounting it read-only, and checking `/etc/hostname`
+still exists before it will call the job done.
+
+Often no resize is needed at all. An image captured from a card usually has a
+little unused space after the last partition, and trimming that is enough.
+The script notices and takes the safe path.
+
+### Making a much smaller master
+
+`--minimal` shrinks as far as the data allows, ignoring the target:
+
+```bash
+sudo ./shrink_image.sh --minimal ~/webelos-wildlifecam.img
+```
+
+A camera master is mostly empty --- typically under 10 GB of a 32 GB card ---
+so this can cut the image by two thirds. Smaller images clone faster, burn
+faster and compress better, and cost nothing at the far end, because the Pi
+grows the filesystem back on first boot:
+
+```bash
+sudo raspi-config --expand-rootfs
+```
+
+### Options
+
+| Option | What it does |
+| --- | --- |
+| `--size SIZE` | Fit this many bytes instead of reading a device (accepts `K`/`M`/`G`). |
+| `--minimal` | Shrink as far as the filesystem allows, ignoring the target. |
+| `--margin SIZE` | Spare room so the image also fits a slightly smaller card (default 16MiB). |
+| `--output FILE` | Work on a copy and leave the original untouched (needs the space). |
+| `-n`, `--dry-run` | Print the plan, change nothing. |
+| `-y`, `--yes` | Skip the typed confirmation. |
 | `-h`, `--help` | Show usage. |
 
 ## Burning to a card
