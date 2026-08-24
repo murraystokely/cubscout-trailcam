@@ -141,6 +141,20 @@ A typical photo layout is:
 
 The daily directories are created automatically as needed.
 
+## Taking the program apart
+
+The [`analysis/`](analysis) directory has two notebooks that walk through
+`step7_ai_motion_detection.py` one step at a time, showing each piece working on
+real photographs the cameras took: downsampling, the night filter, the
+background model, thresholding, cleaning up, and finding the blob. The Jupyter
+one reads in a browser straight from GitHub, outputs and all, with nothing
+installed:
+
+- [`analysis/step7_image_processing.ipynb`](analysis/step7_image_processing.ipynb) --- Python and OpenCV
+- [`analysis/step7_image_processing.nb`](analysis/step7_image_processing.nb) --- the same thing in the Wolfram Language
+
+Both finish with a **Future work** section on techniques worth trying next.
+
 ## Running the wildlife camera automatically at boot
 
 The finished camera should work without a monitor or keyboard. When

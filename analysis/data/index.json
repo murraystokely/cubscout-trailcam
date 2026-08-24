@@ -1,0 +1,171 @@
+{
+  "_about": "Hand-picked frames from wildlifecam4, 23 August 2026, for the notebooks in analysis/.  Real camera output, nothing staged.  No identifiable people: the only person in the set is a foot in a sandal.  Each demonstration pairs a test frame with background frames from the training burst immediately before it, so the light matches -- comparing against a background learned minutes earlier makes the whole scene look like it moved.",
+  "bg_motion_*.jpg": {
+    "source": "training burst 15:51:00-15:51:18",
+    "description": "five unbiased frames of the empty patio; the background for motion_sandal"
+  },
+  "bg_quiet_*.jpg": {
+    "source": "training burst 16:00:18-16:00:59",
+    "description": "five unbiased frames; the background for quiet_patio and falsepos_fern"
+  },
+  "scene_cheerios.jpg": {
+    "source": "152101",
+    "description": "the whole scene: bench, trees, cheerios on the patio",
+    "trigger": "confirmed motion",
+    "motion": {
+      "largest_blob_area": 50,
+      "largest_blob_fraction": 0.0006510416666666666,
+      "changed_fraction": 0.0006510416666666666,
+      "extent": 0.5050505050505051,
+      "aspect": 1.2222222222222223,
+      "brightness_shift": 1.0,
+      "pixel_threshold": 25,
+      "confirmations": 18,
+      "mean_luma": 115.5563671875,
+      "exposure_us": 6480,
+      "analogue_gain": 1.0,
+      "box": [
+        1958,
+        500,
+        69,
+        57
+      ]
+    },
+    "ai": [
+      {
+        "class": "bench",
+        "confidence": 0.5
+      },
+      {
+        "class": "chair",
+        "confidence": 0.44
+      },
+      {
+        "class": "chair",
+        "confidence": 0.38
+      },
+      {
+        "class": "bench",
+        "confidence": 0.27
+      }
+    ]
+  },
+  "quiet_patio.jpg": {
+    "source": "160059",
+    "description": "nothing happening, same burst as bg_quiet"
+  },
+  "motion_sandal.jpg": {
+    "source": "155202",
+    "description": "a foot in a sandal enters the frame - real motion",
+    "trigger": "strong motion",
+    "motion": {
+      "largest_blob_area": 1537,
+      "largest_blob_fraction": 0.020013020833333332,
+      "changed_fraction": 0.020130208333333333,
+      "extent": 0.49902597402597404,
+      "aspect": 1.5909090909090908,
+      "brightness_shift": 0.0,
+      "pixel_threshold": 25,
+      "confirmations": 0,
+      "mean_luma": 115.791484375,
+      "exposure_us": 7528,
+      "analogue_gain": 1.0,
+      "box": [
+        1749,
+        817,
+        278,
+        443
+      ]
+    },
+    "ai": [
+      {
+        "class": "chair",
+        "confidence": 0.56
+      },
+      {
+        "class": "bench",
+        "confidence": 0.44
+      }
+    ]
+  },
+  "lighting_change.jpg": {
+    "source": "155204",
+    "description": "two seconds later; the sun also came out",
+    "trigger": "strong motion",
+    "motion": {
+      "largest_blob_area": 5762,
+      "largest_blob_fraction": 0.07502604166666667,
+      "changed_fraction": 0.16505208333333332,
+      "extent": 0.5020913210177762,
+      "aspect": 1.986842105263158,
+      "brightness_shift": 5.0,
+      "pixel_threshold": 37,
+      "confirmations": 0,
+      "mean_luma": 132.15450520833335,
+      "exposure_us": 9991,
+      "analogue_gain": 1.0893616676330566,
+      "box": [
+        855,
+        576,
+        956,
+        481
+      ]
+    },
+    "ai": [
+      {
+        "class": "person",
+        "confidence": 0.56
+      },
+      {
+        "class": "chair",
+        "confidence": 0.44
+      },
+      {
+        "class": "chair",
+        "confidence": 0.44
+      },
+      {
+        "class": "bench",
+        "confidence": 0.38
+      }
+    ]
+  },
+  "falsepos_fern.jpg": {
+    "source": "160117",
+    "description": "only a fern waving at the right-hand edge",
+    "trigger": "strong motion",
+    "motion": {
+      "largest_blob_area": 437,
+      "largest_blob_fraction": 0.005690104166666667,
+      "changed_fraction": 0.00640625,
+      "extent": 0.6225071225071225,
+      "aspect": 2.1666666666666665,
+      "brightness_shift": 0.0,
+      "pixel_threshold": 25,
+      "confirmations": 0,
+      "mean_luma": 119.93682291666667,
+      "exposure_us": 7932,
+      "analogue_gain": 1.0,
+      "box": [
+        1913,
+        456,
+        114,
+        247
+      ]
+    },
+    "ai": [
+      {
+        "class": "chair",
+        "confidence": 0.56
+      },
+      {
+        "class": "bench",
+        "confidence": 0.38
+      },
+      {
+        "class": "bench",
+        "confidence": 0.38
+      }
+    ]
+  }
+}
