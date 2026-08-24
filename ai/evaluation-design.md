@@ -117,11 +117,52 @@ full-resolution colour frame lands every 10 seconds.
 
 | | size | rate | per 30 s burst |
 |---|---|---|---|
-| lores 320x240 YUV420 PNG | 70 KB | every check (4 Hz) | 120 frames, 8.4 MB |
-| full 2028x1520 colour JPEG | 690 KB | every 10 s | 3 frames, 2.1 MB |
+| lores 640x480 YUV420 PNG | 246 KB | every check (4 Hz) | 120 frames, 30 MB |
+| full 2028x1520 colour JPEG | 686 KB | every 10 s | 3 frames, 2.1 MB |
+| full 2028x1520 colour JPEG | 686 KB | **plus one whenever anything stirs**, at most one a second | 0 on a quiet scene |
 
-Hourly bursts then cost about **10 MB an hour, 250 MB a day** --- against 6.1 GB
-a day for the original settings, for strictly better replay data.
+Hourly bursts, daylight only, come to about **450 MB a day** on a quiet scene
+and **750 MB** if something is moving through every burst --- against 6.1 GB a
+day for the settings we started with.
+
+That is per camera. Ten cameras all recording is 4.5 GB a day, which is why
+[the milestones below](#milestones) say to collect in week-long campaigns on
+two or three differently-sited cameras rather than continuously on the whole
+fleet.
+
+### Catching the frames that actually matter
+
+The first afternoon produced 1311 unbiased frames and **not one animal**. That
+is the real problem with a uniform sample: the quiet frames are abundant and
+nearly worthless, the animal frames are rare and irreplaceable, and spending
+the same bytes on both gets the ratio exactly backwards.
+
+So a full-resolution frame is also taken the instant *anything* stirs, at a
+threshold about six times below the one that keeps a photograph, capped at one
+a second. On a still patio this costs nothing. When something finally walks
+past, it is the difference between having a training set and having a training
+set with an animal in it.
+
+It does not bias the measurements, which is the thing to be careful about here:
+the little frames keep recording every check regardless of what the rules
+think, so we can still see what they missed.
+
+### Waiting for the light
+
+After dark the sensor hands over a black rectangle with noise in it, and
+nothing in it can be identified --- not by MegaDetector, not by a Scout. Bursts
+therefore check the light first and skip the slot if `mean_luma` is below
+`RECORD_MIN_LUMA` (40; daylight on the patio measured about 120), retrying
+every ten minutes so dawn is picked up promptly rather than up to an hour late.
+A burst already running when the light goes stops there.
+
+This is a higher bar than `MIN_MEAN_LUMA` (25), which only asks "can we tell
+motion from sensor noise". Here the question is "would this picture be worth
+looking at", and it deserves a stricter answer.
+
+Night coverage is a genuine gap, not something this solves --- the AI Camera
+has no infra-red illumination, so after dusk these cameras are simply blind.
+Worth knowing before anyone concludes the wildlife is nocturnal.
 
 ### Why the lores frames keep their colour
 
@@ -174,10 +215,28 @@ kernel is a fixed size and erases anything only a few pixels across:
 | 320 | 14x9 px | 7x4 px --- marginal |
 | 640 | 28x18 px | 14x8 px |
 
-So 320x240 is right for a camera watching a patio or a feeding spot. A camera
-aimed down a long trail is the case for raising its `LORES_SIZE` to 640x480 ---
-about 3.5x the storage, buying distance rather than accuracy. Decide it per
-site, from that site's own `--record` data.
+`LORES_SIZE` is therefore **640x480**: the patio is where we are testing, but
+trails are the actual job, and animals there are further away.
+
+Every other setting measured in pixels --- the blur, the two cleanup kernels,
+the confirmation radius --- is scaled from the 320-wide frame they were
+measured on, so changing `LORES_SIZE` moves how far the camera can see and
+nothing else. A blob of the same real-world size still counts the same, because
+the blob thresholds are fractions of the frame.
+
+Replaying 1262 real burst frames at both sizes confirmed it, and turned up
+something better than expected --- at 640x480 the vegetation noise is *smaller*
+as a fraction of the frame, because the scaled blur and opening kernels smooth
+its fine structure more effectively:
+
+| | 320x240 | 640x480 |
+|---|---|---|
+| p95 blob | 0.0833% | 0.0364% |
+| frames over the save floor | 11/1262 | 5/1262 |
+| margin below the threshold | 2.3x | **5.4x** |
+
+So the higher resolution buys reach *and* a quieter baseline. It costs about
+3.5x the storage.
 
 ### Storage budget
 

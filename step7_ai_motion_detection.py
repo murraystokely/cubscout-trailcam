@@ -87,9 +87,36 @@ MAIN_FORMAT = "RGB888"
 # "lores" is a small copy the camera hardware produces for free.  Its Y
 # plane already is a greyscale image, so motion detection costs us no
 # resizing and no colour conversion at all.
-LORES_SIZE = (320, 240)
+# A patio only needs 320x240, but the real job is a trail, where animals
+# are further away.  Resolution does NOT separate an animal from a weed
+# any better -- both grow together, and the ratio between them stays the
+# same at any size.  What it buys is reach at the small end, because the
+# cleanup kernels below are a fixed number of pixels and rub out anything
+# only a few across:
+#
+#     320 wide : deer at 30 m = 14x9 px,  squirrel at 10 m = 7x4 px
+#     640 wide : deer at 30 m = 28x18px,  squirrel at 10 m = 14x8px
+#
+# So this is a distance setting, not an accuracy setting.
+LORES_SIZE = (640, 480)
 
 MOTION_WIDTH, MOTION_HEIGHT = LORES_SIZE
+
+# Every setting below that is measured in pixels was chosen on a 320-wide
+# frame.  Scaling them here means changing LORES_SIZE moves how FAR the
+# camera can see, and nothing else -- a blob of the same real-world size
+# still counts the same.
+MOTION_SCALE = MOTION_WIDTH / 320.0
+
+
+def odd(value):
+    """Nearest odd number >= 3.  OpenCV kernels have to be odd."""
+    return max(3, int(round(value)) | 1)
+
+
+BLUR_KERNEL = odd(5 * MOTION_SCALE)
+OPEN_SIZE = odd(3 * MOTION_SCALE)
+CLOSE_SIZE = odd(7 * MOTION_SCALE)
 MOTION_PIXELS = MOTION_WIDTH * MOTION_HEIGHT
 
 JPEG_QUALITY = 88
@@ -157,7 +184,7 @@ MAX_ASPECT = 8.0                  # longest side / shortest side
 # them apart is that a leaf blows back to where it started and an animal
 # does not, so a small blob has to still be there on the next check.
 CONFIRM_CHECKS = 2
-CONFIRM_RADIUS = 40               # px the centre may travel between checks
+CONFIRM_RADIUS = int(40 * MOTION_SCALE)   # px the centre may travel per check
 CONFIRM_TIMEOUT = 1.5             # s before we forget a half-confirmed blob
 
 # Whole-scene changes.  Lots of change is only suspicious when no single
@@ -262,6 +289,28 @@ RECORD_LORES_INTERVAL = 0.0       # 0 = every single check (the loop rate)
 # not need many: MegaDetector on the laptop wants a recognisable animal,
 # not a smooth film.
 RECORD_FULL_INTERVAL = 10.0       # seconds between full-resolution frames
+
+# ...and one straight away whenever anything at all stirs, however small.
+# Animals are rare.  On a quiet patio this costs nothing, and when
+# something finally does walk past it is the difference between having a
+# training set and having a training set with an animal in it.  The
+# threshold is deliberately far below the one that keeps a photograph, so
+# it catches things the rules themselves would ignore.
+#
+# This does NOT bias the measurements: the little frames keep recording
+# every check regardless, so we can still see what the rules missed.
+RECORD_MOTION_FRACTION = 0.0003   # ~92 px at 640x480, a sixth of the floor
+RECORD_MOTION_AREA = int(RECORD_MOTION_FRACTION * MOTION_PIXELS)
+RECORD_MOTION_INTERVAL = 1.0      # at most one a second while it lasts
+
+# After dark the sensor gives us a black rectangle with noise in it, and
+# nobody can identify an animal in that -- neither MegaDetector nor a
+# Scout.  So bursts wait for the light.  This is higher than
+# MIN_MEAN_LUMA, which is only asking "can we tell motion from noise";
+# here we are asking "would this picture be worth looking at".  Daylight
+# on the patio measured about 120.
+RECORD_MIN_LUMA = 40
+RECORD_DARK_RETRY = 600.0         # try again in ten minutes, to catch dawn
 
 # Sizes measured on real frames from wildlifecam4:
 #
@@ -745,12 +794,12 @@ request = picam2.capture_request()
 try:
     lores = request.make_array("lores")
     gray = lores[:MOTION_HEIGHT, :MOTION_WIDTH]
-    background = cv2.GaussianBlur(gray, (5, 5), 0).astype("float32")
+    background = cv2.GaussianBlur(gray, (BLUR_KERNEL, BLUR_KERNEL), 0).astype("float32")
 finally:
     request.release()
 
-OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (OPEN_SIZE, OPEN_SIZE))
+CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (CLOSE_SIZE, CLOSE_SIZE))
 
 BACKGROUND_ALPHA = min(1.0, LOOP_DELAY / BACKGROUND_TAU)
 BACKGROUND_ALPHA_BUSY = min(1.0, LOOP_DELAY / BACKGROUND_TAU_BUSY)
@@ -763,6 +812,7 @@ record_next = time.time() if recording_enabled else None
 record_until = 0.0
 record_last = 0.0
 record_lores_last = 0.0
+waiting_for_light = False
 
 last_save_time = 0.0
 save_times = []
@@ -781,8 +831,9 @@ print(f"  blob >= {MIN_BLOB_AREA} px needs confirming, "
 if recording_enabled:
     print(f"  recording a {RECORD_LENGTH:.0f} second training burst every "
           f"{RECORD_EVERY / 60:.0f} minutes into training/: "
-          f"{LORES_SIZE[0]}x{LORES_SIZE[1]} grey every check, "
-          f"full colour every {RECORD_FULL_INTERVAL:.0f} s")
+          f"{LORES_SIZE[0]}x{LORES_SIZE[1]} every check, full colour every "
+          f"{RECORD_FULL_INTERVAL:.0f} s or whenever a blob reaches "
+          f"{RECORD_MOTION_AREA} px, and only above luma {RECORD_MIN_LUMA}")
 
 
 # ------------------------------------------------------------
@@ -835,7 +886,8 @@ while True:
             # keep all of it for training frames -- see save_training_lores.
             raw_lores = lores[:MOTION_HEIGHT * 3 // 2, :MOTION_WIDTH].copy()
 
-            gray = cv2.GaussianBlur(raw_lores[:MOTION_HEIGHT], (5, 5), 0)
+            gray = cv2.GaussianBlur(raw_lores[:MOTION_HEIGHT],
+                                    (BLUR_KERNEL, BLUR_KERNEL), 0)
 
             # ------------------------------------------------
             # Compare against the learned background
@@ -1045,22 +1097,49 @@ while True:
             # ------------------------------------------------
 
             if record_next is not None and moment >= record_next:
-                record_until = moment + RECORD_LENGTH
-                record_next = moment + RECORD_EVERY
+                if mean_luma < RECORD_MIN_LUMA:
+                    # Too dark to be worth keeping.  Do not spend the
+                    # slot; look again shortly, so dawn is not missed by
+                    # an hour.
+                    record_next = moment + RECORD_DARK_RETRY
 
-                print(f"{now:%H:%M:%S} recording a "
-                      f"{RECORD_LENGTH:.0f} second training burst")
+                    if not waiting_for_light:
+                        print(f"{now:%H:%M:%S} too dark for training frames "
+                              f"(luma {mean_luma:.0f} < {RECORD_MIN_LUMA}); "
+                              f"waiting for the light")
+                        waiting_for_light = True
+                else:
+                    if waiting_for_light:
+                        print(f"{now:%H:%M:%S} light is back "
+                              f"(luma {mean_luma:.0f})")
+                        waiting_for_light = False
 
-            in_burst = moment < record_until and disk_ok
+                    record_until = moment + RECORD_LENGTH
+                    record_next = moment + RECORD_EVERY
 
-            # the little grey frame, every check
+                    print(f"{now:%H:%M:%S} recording a "
+                          f"{RECORD_LENGTH:.0f} second training burst")
+
+            # If the light goes while a burst is running, stop it there
+            # rather than filling the card with black rectangles.
+            in_burst = (moment < record_until
+                        and disk_ok
+                        and mean_luma >= RECORD_MIN_LUMA)
+
+            # the little frame, every check
             record_lores = (in_burst
                             and moment - record_lores_last
                             >= RECORD_LORES_INTERVAL)
 
-            # the big colour one, now and then
+            # the big colour one, on a slow tick...
             recording = (in_burst
                          and moment - record_last >= RECORD_FULL_INTERVAL)
+
+            # ...and straight away if anything at all is stirring
+            if (in_burst
+                    and largest_area >= RECORD_MOTION_AREA
+                    and moment - record_last >= RECORD_MOTION_INTERVAL):
+                recording = True
 
             # Copying the full-resolution frame is the expensive part, so
             # only do it once we know the frame is being kept -- either as
