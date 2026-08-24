@@ -657,14 +657,31 @@ def training_name(now, suffix):
             f"_{now.microsecond // 1000:03d}.{suffix}")
 
 
-def save_training_lores(now, raw_gray):
-    """Save exactly the frame the motion rules were handed, losslessly.
+def save_training_lores(now, raw_lores):
+    """Save exactly the buffer the camera handed us, losslessly.
 
     Unblurred and uncompressed, so replaying it offline runs the very
     same pipeline over the very same pixels.
+
+    We keep the COLOUR planes as well, even though today's rules only
+    read brightness, because it costs 30% more and cannot be recovered
+    later.  Two things we may well want it for:
+
+      * A shadow keeps its colour and only changes brightness.  That is
+        the standard way to tell a cloud passing over from an animal
+        walking past, and it is the one false positive we gave up on.
+      * Green leaves against a brown animal separate far better in
+        colour than in grey.
+
+    The file is the raw YUV420 buffer, so it reads back as a tall thin
+    grey image.  To get a picture out of it:
+
+        buf = cv2.imread(name, cv2.IMREAD_GRAYSCALE)
+        grey   = buf[:240]                                     # what the rules saw
+        colour = cv2.cvtColor(buf, cv2.COLOR_YUV2BGR_I420)     # the full frame
     """
     name = training_name(now, "png")
-    cv2.imwrite(name, raw_gray)
+    cv2.imwrite(name, raw_lores)
     return os.path.basename(name)
 
 
@@ -813,9 +830,12 @@ while True:
             # is what a training frame stores: blurring first and saving
             # that would make an offline replay blur a second time, and
             # measure a slightly different picture from the live one.
-            raw_gray = lores[:MOTION_HEIGHT, :MOTION_WIDTH].copy()
+            # The whole YUV420 buffer: the Y (brightness) plane the rules
+            # use, followed by quarter-size U and V (colour) planes.  We
+            # keep all of it for training frames -- see save_training_lores.
+            raw_lores = lores[:MOTION_HEIGHT * 3 // 2, :MOTION_WIDTH].copy()
 
-            gray = cv2.GaussianBlur(raw_gray, (5, 5), 0)
+            gray = cv2.GaussianBlur(raw_lores[:MOTION_HEIGHT], (5, 5), 0)
 
             # ------------------------------------------------
             # Compare against the learned background
@@ -1122,7 +1142,7 @@ while True:
         training_file = ""
 
         if record_lores:
-            training_file = save_training_lores(now, raw_gray)
+            training_file = save_training_lores(now, raw_lores)
             record_lores_last = moment
 
         if recording:
