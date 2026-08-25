@@ -136,6 +136,39 @@ BUFFER_COUNT = 4
 
 
 # ------------------------------------------------------------
+# Which of these numbers travel, and which do not
+# ------------------------------------------------------------
+#
+# Some of what follows is physics and will hold anywhere.  Some was
+# measured in one back garden, pointed at one patio, on two days, with a
+# crow as the only animal that ever turned up.  It matters which is
+# which, because this camera is going to be moved.
+#
+# Travels:
+#   the two-speed background, and why it must always keep learning
+#   the signed-median test for "the light changed"
+#   "one big lump is an object, scattered change is wind"
+#   a shadow is the same ground uniformly dimmed, so it has little
+#     internal range and a soft edge -- an object has both
+#   blob thresholds as FRACTIONS of the frame, so they survive a change
+#     of resolution
+#
+# Measured here, and to be re-measured after the camera moves:
+#   MIN_BLOB_FRACTION      - set between a fern (19-95 px) and a crow
+#                            (862 px and up).  A different site has a
+#                            different smallest nuisance.
+#   SHADOW_MIN_RANGE/EDGE  - a black crow on grey concrete in sunshine.
+#                            A pale animal on pale ground in flat light
+#                            has less of both.
+#   RECORD_MIN_LUMA        - daylight here measured about 120.
+#   LORES_SIZE             - a distance setting: how far away the
+#                            smallest animal you care about will be.
+#
+# The training bursts exist precisely so the second list can be measured
+# again rather than argued about.  After moving the camera, give it a day
+# and look at the CSV before changing any of them.
+
+# ------------------------------------------------------------
 # Motion detection settings
 # ------------------------------------------------------------
 
@@ -400,23 +433,9 @@ SAVE_ANNOTATED = True
 # The AI never decides whether we save, so these are only ever used to
 # add evidence, not to take it away.
 MIN_AI_CONFIDENCE = 0.25          # worth writing into the JSON
-MIN_AI_RESCUE_CONFIDENCE = 0.40   # worth promoting a weak blob
 MIN_AI_HINT_CONFIDENCE = 0.45     # worth flagging as probably an animal
 
-# The AI recognises the furniture too.  A bench, a chair, a fence post is
-# detected in every single frame, and its box is huge -- so a stray blob
-# of noise that happens to land inside it would be "confirmed" by an
-# object that has not moved all day.  Requiring the AI's box to be roughly
-# the size of the thing that moved stops the very worst of that.
-#
-# It is weaker than it looks, and the day's data says so: among detections
-# that overlap the motion box, "bird" has a median size ratio of 1.2 and the
-# furniture 1.4.  Indistinguishable by size.  So this catches only the
-# extreme case -- a tiny blob inside a frame-filling box -- and nothing that
-# depends on telling an animal from a bench may lean on it.
-MAX_AI_BOX_RATIO = 20
-
-# COCO has no deer, raccoon, squirrel or coyote, so a real animal here
+# COCO has no deer, raccoon, squirrel, fox or coyote, so a real animal here
 # usually lands on the nearest thing the model does happen to know.
 ANIMAL_CLASSES = {
     "bird",
@@ -541,47 +560,22 @@ def get_ai_detections(metadata):
     return detections
 
 
-def ai_supports(detections, motion_box):
-    """True if the AI sees SOMETHING solid where the motion was.
-
-    We deliberately accept any class, not just the animal ones.  A
-    raccoon might come back as "cat", a turkey as "bird", a fawn as
-    "dog".  All we are asking is whether the model agrees that an object
-    is there, which is exactly the question a leaf fails.
-    """
-    _, _, motion_w, motion_h = motion_box
-    motion_area = max(motion_w * motion_h, 1)
-
-    for detection in detections:
-        if detection["confidence"] < MIN_AI_RESCUE_CONFIDENCE:
-            continue
-
-        _, _, w, h = detection["box"]
-
-        # Ignore the scenery: see MAX_AI_BOX_RATIO above.
-        if w * h > MAX_AI_BOX_RATIO * motion_area:
-            continue
-
-        if boxes_overlap(detection["box"], motion_box):
-            return True
-
-    return False
-
-
-def boxes_overlap(first, second):
-    ax, ay, aw, ah = first
-    bx, by, bw, bh = second
-
-    return (ax < bx + bw and bx < ax + aw
-            and ay < by + bh and by < ay + ah)
-
-
 def blob_texture(raw_gray, box):
     """Return (range, edge) for the pixels inside a blob's bounding box.
 
-    Both are measured on the UNBLURRED frame.  The blur that motion
+    range - the spread of brightness inside the blob.  A real object has
+            light parts and dark parts.  A shadow is the SAME ground,
+            uniformly dimmed, so its spread stays small.
+    edge  - the strongest edges inside the blob.  An animal has a hard
+            silhouette; a shadow has a soft penumbra.
+
+    Both are measured on the UNBLURRED frame: the blur that motion
     detection runs on would soften exactly the hard silhouette we are
-    trying to find, so it would hide the difference we want.
+    looking for, and hide the difference we want.
+
+    Neither says anything about the SHAPE of the thing, which matters --
+    a fox with its tail out, or a weasel, is far longer than it is tall,
+    and a rule about proportions would throw exactly those away.
     """
     x, y, w, h = box
 
@@ -597,40 +591,6 @@ def blob_texture(raw_gray, box):
     gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
 
     return float(high - low), float(np.percentile(np.hypot(gx, gy), 99))
-
-
-def ai_sees_animal(detections, motion_box):
-    """Stricter than ai_supports: the AI must name something ALIVE.
-
-    Used only to rescue a blob the texture test called a shadow.  Plain
-    ai_supports is no good there, because it accepts any class -- and this
-    camera detects the bench in every frame with a box overlapping most of
-    the patio, so a big shadow would rescue itself.  Measured: with a
-    frame-filling furniture box, ai_supports rescued 10 of 51 shadow frames.
-
-    Requiring an animal class costs little.  Not one of the 71 crow frames
-    failed the texture test to begin with, so this path exists for an animal
-    we have not met yet -- something pale, in flat light, that the model
-    nonetheless recognises.
-    """
-    _, _, motion_w, motion_h = motion_box
-    motion_area = max(motion_w * motion_h, 1)
-
-    for detection in detections:
-        if detection["class"] not in ANIMAL_CLASSES:
-            continue
-        if detection["confidence"] < MIN_AI_RESCUE_CONFIDENCE:
-            continue
-
-        _, _, w, h = detection["box"]
-
-        if w * h > MAX_AI_BOX_RATIO * motion_area:
-            continue
-
-        if boxes_overlap(detection["box"], motion_box):
-            return True
-
-    return False
 
 
 def to_main_coords(box):
@@ -1095,14 +1055,15 @@ while True:
             #   5. flat inside, soft edges       -> skip (a shadow)
             #   6. a big blob                    -> SAVE
             #   7. a small blob, seen twice      -> SAVE
-            #   8. a small blob the AI agrees on -> SAVE
-            #   9. anything else                 -> wait and see
+            #   8. anything else                 -> wait and see
             #
-            # Notice that the AI only ever appears in rule 7, and only
-            # ever says yes.  It can turn a maybe into a photograph; it
-            # can never stop one.  That is deliberate: the model knows 80
-            # everyday objects and not one of them is a deer, so a "no"
-            # from it means nothing at all.
+            # The AI does not appear here at all, and that is deliberate.
+            # Over two days it decided 2 saves out of 1069, and both were
+            # the bench "confirming" a blob of noise that had not moved.
+            # It knows eighty everyday objects; fox, raccoon, deer, coyote
+            # and squirrel are not among them.  What it recognises is
+            # written into every JSON for the laptop to use later, but it
+            # is not allowed to decide anything here.
             # ------------------------------------------------
 
             decision = "quiet"
@@ -1158,17 +1119,11 @@ while True:
                       and blob_edge >= SHADOW_MIN_EDGE):
                 # 5. Flat inside and soft at the edges: the same ground,
                 # dimmed.  A branch's shadow sliding across the concrete
-                # looks like this at any size and any shape.  Only the AI
-                # can rescue it, because persistence cannot -- a shadow
-                # creeps steadily and confirms itself perfectly.
-                ai_detections = get_ai_detections(metadata)
-
-                if motion_box and ai_sees_animal(ai_detections, motion_box):
-                    decision = "shadow-like, but the AI names an animal"
-                    save_now = True
-                else:
-                    decision = "shadow"
-                    pending = None
+                # looks like this at any size and any shape, and persistence
+                # cannot help -- a shadow creeps steadily and confirms
+                # itself perfectly.
+                decision = "shadow"
+                pending = None
 
             elif strong:
                 # 6. Big, with real structure in it.  Take the picture.
@@ -1187,18 +1142,10 @@ while True:
                     save_now = True
 
                 else:
-                    # 8. Only seen once so far -- but if the AI can see an
-                    # object right there, that is good enough. This is
-                    # what catches an animal far away on the very first
-                    # frame instead of a quarter-second later.
-                    ai_detections = get_ai_detections(metadata)
-
-                    if ai_supports(ai_detections, motion_box):
-                        decision = "small blob, AI agrees"
-                        save_now = True
-                    else:
-                        # 9. Wait and see.
-                        decision = "waiting for confirmation"
+                    # 8. Wait and see.  A quarter of a second from now this
+                    # blob either is still there or it is not, and that
+                    # answers the question better than anything else can.
+                    decision = "waiting for confirmation"
 
             # ------------------------------------------------
             # Rate limits
