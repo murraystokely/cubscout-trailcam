@@ -14,7 +14,7 @@ PHOTO_DIR="/var/www/html/photos"
 #
 # Every camera in the fleet starts THIS script from systemd at boot.  As
 # each one gets upgraded to a Raspberry Pi AI Camera it should really be
-# running step7 instead, which uses the AI built into the sensor.
+# running step8 instead, which uses the AI built into the sensor.
 #
 # Rather than editing the service file on every Pi as we work through
 # them, we just ask what camera is actually plugged in.  Upgrade the
@@ -22,14 +22,20 @@ PHOTO_DIR="/var/www/html/photos"
 #
 # Both programs write to PHOTO_DIR above, in the same
 # <date>/<HHMMSS>.jpg layout, so nginx and sync_cameras.py cannot tell
-# the difference.  step7 simply adds _annotated.jpg and .json beside it.
+# the difference.  step8 simply adds _annotated.jpg and .json beside it.
 
-AI_SCRIPT = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "step7_ai_motion_detection.py",
-)
+# Prefer the deployed camera; fall back to the lesson if that is all a Pi
+# has.  step8 is step7 plus the parts that keep a fleet alive unattended.
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-# step7 cannot start without this, so if the imx500 packages were never
+AI_SCRIPT = ""
+for candidate in ("step8_wildlife_camera.py", "step7_ai_motion_detection.py"):
+    path = os.path.join(HERE, candidate)
+    if os.path.exists(path):
+        AI_SCRIPT = path
+        break
+
+# Neither can start without this, so if the imx500 packages were never
 # installed we are better off staying here than crash-looping there.
 AI_MODEL = (
     "/usr/share/imx500-models/"
@@ -53,7 +59,7 @@ def ai_camera_attached():
 
 
 if (ai_camera_attached()
-        and os.path.exists(AI_SCRIPT)
+        and AI_SCRIPT
         and os.path.exists(AI_MODEL)):
 
     print("AI Camera found -- handing over to "
