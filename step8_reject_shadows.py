@@ -540,50 +540,64 @@ picam2.start()
 def get_ai_detections(metadata):
     """Return whatever the sensor's own AI model thinks it can see.
 
+    This is metadata and nothing more.  Since the AI was taken out of the
+    decision it cannot cause a photograph to be taken -- and it must not be
+    able to stop one either.  Anything that goes wrong in here therefore
+    degrades to "the AI saw nothing" rather than escaping: an exception
+    would reach the loop's outer handler, which would skip the save, and
+    the camera would go on looking healthy while quietly never saving
+    another picture.  That is the worst way for a trail camera to fail,
+    because nothing about it looks like failure.
+
     Every box comes back in full-resolution photograph pixels, the same
     coordinates we use for the motion box, so the laptop never has to
     guess which picture a box belongs to.
     """
-    outputs = imx500.get_outputs(metadata, add_batch=True)
+    try:
+        outputs = imx500.get_outputs(metadata, add_batch=True)
 
-    if outputs is None:
+        if outputs is None:
+            return []
+
+        boxes = outputs[0][0]
+        scores = outputs[1][0]
+        classes = outputs[2][0]
+
+        _, input_height = imx500.get_input_size()
+
+        if intrinsics.bbox_normalization:
+            boxes = boxes / input_height
+
+        if intrinsics.bbox_order == "xy":
+            boxes = boxes[:, [1, 0, 3, 2]]
+
+        detections = []
+
+        for box, score, category in zip(boxes, scores, classes):
+            if score < MIN_AI_CONFIDENCE:
+                continue
+
+            # The label list and the network's class indices come from
+            # different files.  If they ever disagree, an IndexError here would
+            # escape into the outer handler and the camera would keep running
+            # while silently never saving another photograph -- the worst way
+            # to fail.  Name the class by number instead.
+            index = int(category)
+            name = labels[index] if 0 <= index < len(labels) else f"class{index}"
+
+            x, y, w, h = imx500.convert_inference_coords(box, metadata, picam2)
+
+            detections.append({
+                "class": name,
+                "confidence": float(score),
+                "box": [int(x), int(y), int(w), int(h)],
+            })
+
+        return detections
+    except Exception as error:
+        print(f"AI metadata unavailable ({error!r}); saving anyway",
+              file=sys.stderr)
         return []
-
-    boxes = outputs[0][0]
-    scores = outputs[1][0]
-    classes = outputs[2][0]
-
-    _, input_height = imx500.get_input_size()
-
-    if intrinsics.bbox_normalization:
-        boxes = boxes / input_height
-
-    if intrinsics.bbox_order == "xy":
-        boxes = boxes[:, [1, 0, 3, 2]]
-
-    detections = []
-
-    for box, score, category in zip(boxes, scores, classes):
-        if score < MIN_AI_CONFIDENCE:
-            continue
-
-        # The label list and the network's class indices come from
-        # different files.  If they ever disagree, an IndexError here would
-        # escape into the outer handler and the camera would keep running
-        # while silently never saving another photograph -- the worst way
-        # to fail.  Name the class by number instead.
-        index = int(category)
-        name = labels[index] if 0 <= index < len(labels) else f"class{index}"
-
-        x, y, w, h = imx500.convert_inference_coords(box, metadata, picam2)
-
-        detections.append({
-            "class": name,
-            "confidence": float(score),
-            "box": [int(x), int(y), int(w), int(h)],
-        })
-
-    return detections
 
 
 def blob_texture(raw_gray, box):
