@@ -161,7 +161,7 @@ MAX_PIXEL_THRESHOLD = 75
 # 150 px, which at this lens is a squirrel beyond ~10 m or a deer beyond
 # ~40 m.  If a camera looks down a long trail rather than at a patio,
 # measure its own site with --record and lower this for that camera.
-MIN_BLOB_FRACTION = 0.00195       # ~150 px at 320x240
+MIN_BLOB_FRACTION = 0.00098       # ~300 px at 640x480
 STRONG_BLOB_FRACTION = 0.0043     # ~330 px: big enough to save on sight
 
 MIN_BLOB_AREA = int(MIN_BLOB_FRACTION * MOTION_PIXELS)
@@ -177,6 +177,15 @@ STRONG_BLOB_AREA = int(STRONG_BLOB_FRACTION * MOTION_PIXELS)
 # out sparse and we would rather keep it.
 MIN_EXTENT = 0.30                 # blob area / bounding box area
 MAX_ASPECT = 8.0                  # longest side / shortest side
+
+# Note on MAX_ASPECT: it is deliberately loose, and stays loose.  A crow is
+# compact and tightening this to 3 would have removed 40% of a day's false
+# positives at no cost to the crow -- but a fox with its tail out is about
+# 3.1 times longer than tall, a cougar 3.3, a weasel 4 or 5, and the blob
+# can include the animal's own cast shadow on top of that.  A rule fitted
+# to the proportions of the one animal we happened to photograph would
+# throw away exactly the animals worth having.  The texture tests below do
+# the same job without any assumption about shape.
 
 # Here is the hard part.  One pixel covers about 0.36 cm for every metre
 # of distance, so a 10 cm leaf 2 m away covers MORE pixels than a 1.5 m
@@ -205,6 +214,28 @@ DOMINANT_RATIO = 0.50
 # This also covers the camera adjusting its own exposure, which changes
 # every pixel at once in exactly the same way.
 LIGHTING_SHIFT = 10
+
+# Telling a shadow from an animal, without guessing at its shape.
+#
+# A whole day under a tree produced 750 photographs, and nine out of ten
+# were the shadow of a branch sliding across the concrete.  Two things
+# separate those from an animal, and neither cares how long the animal is:
+#
+#   range - the spread of brightness inside the blob.  A real object has
+#           light parts and dark parts.  A shadow is the SAME concrete,
+#           uniformly dimmed, so its spread stays small.
+#   edge  - the strongest edges inside the blob.  An animal has a hard
+#           silhouette against the ground.  A shadow has a soft penumbra.
+#
+# Measured on that day: every one of the 71 crow frames had a range above
+# 144 and edges above 500, while the median shadow managed 103 and 107.
+# The thresholds sit well below the bird and well above the shadow.
+#
+# A blob that fails these is not thrown away outright -- the AI can still
+# rescue it -- because a pale animal in flat light could plausibly fail
+# both, and the training bursts record it regardless either way.
+SHADOW_MIN_RANGE = 110
+SHADOW_MIN_EDGE = 250
 
 # Below this average brightness the sensor is mostly amplifying its own
 # noise, and nothing we saved would be usable anyway.
@@ -529,6 +560,29 @@ def boxes_overlap(first, second):
             and ay < by + bh and by < ay + ah)
 
 
+def blob_texture(raw_gray, box):
+    """Return (range, edge) for the pixels inside a blob's bounding box.
+
+    Both are measured on the UNBLURRED frame.  The blur that motion
+    detection runs on would soften exactly the hard silhouette we are
+    trying to find, so it would hide the difference we want.
+    """
+    x, y, w, h = box
+
+    patch = raw_gray[y:y + h, x:x + w]
+
+    if patch.size < 25:
+        return 0.0, 0.0
+
+    low, high = np.percentile(patch, (5, 95))
+
+    patch = patch.astype(np.float32)
+    gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
+
+    return float(high - low), float(np.percentile(np.hypot(gx, gy), 99))
+
+
 def to_main_coords(box):
     """Scale a box from the small motion image up to the photograph."""
     x, y, w, h = box
@@ -591,6 +645,8 @@ MEASUREMENT_FIELDS = [
     "largest_fraction",
     "extent",
     "aspect",
+    "blob_range",
+    "blob_edge",
     "brightness_shift",
     "confirmations",
     "exposure_us",
@@ -954,6 +1010,12 @@ while True:
             largest_fraction = largest_area / MOTION_PIXELS
 
             if largest_box is not None:
+                blob_range, blob_edge = blob_texture(
+                    raw_lores[:MOTION_HEIGHT], largest_box)
+            else:
+                blob_range, blob_edge = 0.0, 0.0
+
+            if largest_box is not None:
                 _, _, box_w, box_h = largest_box
                 extent = largest_area / float(max(box_w * box_h, 1))
                 aspect = max(box_w, box_h) / float(max(min(box_w, box_h), 1))
@@ -980,10 +1042,11 @@ while True:
             #   2. the light changed             -> skip
             #   3. the whole treeline is moving  -> skip
             #   4. too small, or the wrong shape -> skip
-            #   5. a big blob                    -> SAVE
-            #   6. a small blob, seen twice      -> SAVE
-            #   7. a small blob the AI agrees on -> SAVE
-            #   8. anything else                 -> wait and see
+            #   5. flat inside, soft edges       -> skip (a shadow)
+            #   6. a big blob                    -> SAVE
+            #   7. a small blob, seen twice      -> SAVE
+            #   8. a small blob the AI agrees on -> SAVE
+            #   9. anything else                 -> wait and see
             #
             # Notice that the AI only ever appears in rule 7, and only
             # ever says yes.  It can turn a maybe into a photograph; it
@@ -1041,9 +1104,24 @@ while True:
                 if big_enough:
                     decision = "wrong shape"
 
+            elif not (blob_range >= SHADOW_MIN_RANGE
+                      and blob_edge >= SHADOW_MIN_EDGE):
+                # 5. Flat inside and soft at the edges: the same ground,
+                # dimmed.  A branch's shadow sliding across the concrete
+                # looks like this at any size and any shape.  Only the AI
+                # can rescue it, because persistence cannot -- a shadow
+                # creeps steadily and confirms itself perfectly.
+                ai_detections = get_ai_detections(metadata)
+
+                if motion_box and ai_supports(ai_detections, motion_box):
+                    decision = "shadow-like, AI agrees"
+                    save_now = True
+                else:
+                    decision = "shadow"
+                    pending = None
+
             elif strong:
-                # 5. Big and solid.  Do not think about it, take the
-                # picture.
+                # 6. Big, with real structure in it.  Take the picture.
                 decision = "strong motion"
                 save_now = True
 
@@ -1053,13 +1131,13 @@ while True:
                 confirmations = seen_again(largest_centroid, moment)
 
                 if confirmations >= CONFIRM_CHECKS:
-                    # 6. Still there, in the same place, a moment later.
+                    # 7. Still there, in the same place, a moment later.
                     # The leaf blew back; this did not.
                     decision = "confirmed motion"
                     save_now = True
 
                 else:
-                    # 7. Only seen once so far -- but if the AI can see an
+                    # 8. Only seen once so far -- but if the AI can see an
                     # object right there, that is good enough. This is
                     # what catches an animal far away on the very first
                     # frame instead of a quarter-second later.
@@ -1069,7 +1147,7 @@ while True:
                         decision = "small blob, AI agrees"
                         save_now = True
                     else:
-                        # 8. Wait and see.
+                        # 9. Wait and see.
                         decision = "waiting for confirmation"
 
             # ------------------------------------------------
@@ -1186,6 +1264,8 @@ while True:
                 "changed_fraction": changed_fraction,
                 "extent": extent,
                 "aspect": aspect,
+                "blob_range": blob_range,
+                "blob_edge": blob_edge,
                 "brightness_shift": shift,
                 "pixel_threshold": pixel_threshold,
                 "confirmations": confirmations,
@@ -1254,6 +1334,8 @@ while True:
                 "largest_fraction": round(largest_fraction, 5),
                 "extent": round(extent, 3),
                 "aspect": round(aspect, 2),
+                "blob_range": round(blob_range, 1),
+                "blob_edge": round(blob_edge, 1),
                 "brightness_shift": round(shift, 1),
                 "confirmations": confirmations,
                 "exposure_us": exposure_us,
