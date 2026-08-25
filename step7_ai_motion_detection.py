@@ -1,33 +1,45 @@
 #!/usr/bin/env python3
-"""Step 7 -- wildlife trigger for the Raspberry Pi AI Camera.
+"""Step 7 -- using the AI Camera to decide what is worth photographing.
 
-This program decides one thing: is this frame worth keeping?  It saves
-the photograph and a small JSON file beside it, and the laptop does the
-real animal identification later with MegaDetector and SpeciesNet.
+Step 5 saved a picture whenever enough pixels changed.  That works until the
+wind blows, and then it works very badly: ten thousand pixels of shivering
+leaves count exactly the same as ten thousand pixels of deer.
 
-The camera does NOT try to name the animal.  The AI model built into the
-sensor only knows 80 everyday objects and has never heard of a raccoon.
-So the AI is used in one direction only: it can *promote* a weak motion
-blob into a photograph, but it can never veto one.
+This program asks a better question.  Instead of counting changed pixels it
+finds the biggest *connected patch* of them, and instead of comparing each
+frame with the one before it, it compares against a memory of what the scene
+usually looks like.  That second change matters more than it sounds: an
+animal that stops moving vanishes from frame-to-frame comparison, and a deer
+standing still is exactly the photograph worth having.
 
-While you are choosing thresholds for your own camera site, run:
+The Raspberry Pi AI Camera also runs a neural network on the sensor itself,
+for free, on every frame.  We use it in one direction only.  It knows eighty
+everyday objects and not one of them is a deer, so a "no" from it means
+nothing at all -- but a "yes" can rescue a blob we were unsure about.
 
-    python3 -u step7_ai_motion_detection.py --dry-run
+The whole decision, four times a second:
 
-That saves no photographs.  Instead it writes one row of measurements
-per check into a CSV file, so you can look at what your own patch of
-woods really does all day and pick numbers from your own data instead of
-guessing.
+    1. too dark to see anything      -> skip
+    2. the light changed             -> skip
+    3. the whole treeline is moving  -> skip
+    4. too small, or the wrong shape -> skip
+    5. a big blob                    -> SAVE
+    6. a small blob, seen twice      -> SAVE
+    7. a small blob the AI agrees on -> SAVE
+    8. anything else                 -> wait and see
+
+Run it and watch what it prints.  Wave at it, then hold still, then walk
+away, and see which rule fires each time.
+
+This is the lesson.  The program that actually lives in the woods is
+[`step8_wildlife_camera.py`](step8_wildlife_camera.py), which is this plus
+the unglamorous parts -- training bursts, disk guards, rate limits, shadow
+rejection -- that keep a fleet alive for a season but teach nothing about
+finding animals in pictures.
 """
 
-import argparse
-import csv
-import hashlib
 import json
 import os
-import shutil
-import socket
-import sys
 import time
 
 from datetime import datetime
@@ -46,66 +58,38 @@ MODEL = (
 
 PHOTO_DIR = "/var/www/html/photos"
 
-CAMERA_NAME = socket.gethostname()
-
-
-def code_fingerprint():
-    """A short hash of this very file.
-
-    Every photograph records it, and it is printed at start-up.  That way
-    a picture can always be traced back to the exact code that chose to
-    keep it -- and, just as usefully, you can tell at a glance whether the
-    camera is running what you think you copied to it.  Deploying to ten
-    Raspberry Pis by hand, that question comes up more than you would
-    like.
-    """
-    try:
-        with open(os.path.abspath(__file__), "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()[:12]
-    except Exception:
-        return "unknown"
-
-
-CODE_VERSION = code_fingerprint()
-
 
 # ------------------------------------------------------------
-# Camera streams
+# The two pictures the camera gives us
 # ------------------------------------------------------------
 
-# "main" is the photograph we keep.  4:3 uses the whole sensor.  Asking
-# for a 16:9 size throws away the top and bottom of the view, which is
-# the last thing a trail camera wants.
+# "main" is the photograph we keep.  4:3 uses the whole sensor; asking for
+# a 16:9 size throws away the top and bottom of the view, which is the last
+# thing a trail camera wants.
 MAIN_SIZE = (2028, 1520)
 
 # Picamera2 format names describe the byte order in memory, which is the
-# REVERSE of the numpy channel order.  "RGB888" therefore hands OpenCV
-# the BGR array it expects.  Using "BGR888" here saves every photograph
-# with red and blue swapped.
+# REVERSE of the numpy channel order.  "RGB888" therefore hands OpenCV the
+# BGR array it expects.  Using "BGR888" here saves every photograph with red
+# and blue swapped -- which looks fine on a bench and very odd on a fox.
 MAIN_FORMAT = "RGB888"
 
 # "lores" is a small copy the camera hardware produces for free.  Its Y
-# plane already is a greyscale image, so motion detection costs us no
-# resizing and no colour conversion at all.
-# A patio only needs 320x240, but the real job is a trail, where animals
-# are further away.  Resolution does NOT separate an animal from a weed
-# any better -- both grow together, and the ratio between them stays the
-# same at any size.  What it buys is reach at the small end, because the
-# cleanup kernels below are a fixed number of pixels and rub out anything
-# only a few across:
-#
-#     320 wide : deer at 30 m = 14x9 px,  squirrel at 10 m = 7x4 px
-#     640 wide : deer at 30 m = 28x18px,  squirrel at 10 m = 14x8px
-#
-# So this is a distance setting, not an accuracy setting.
+# plane already IS a greyscale image, so motion detection costs us no
+# resizing and no colour conversion at all.  Every decision below is made on
+# this, an image smaller than a postage stamp.
 LORES_SIZE = (640, 480)
 
 MOTION_WIDTH, MOTION_HEIGHT = LORES_SIZE
+MOTION_PIXELS = MOTION_WIDTH * MOTION_HEIGHT
+
+JPEG_QUALITY = 88
+BUFFER_COUNT = 4
+
 
 # Every setting below that is measured in pixels was chosen on a 320-wide
-# frame.  Scaling them here means changing LORES_SIZE moves how FAR the
-# camera can see, and nothing else -- a blob of the same real-world size
-# still counts the same.
+# frame, so they are scaled here.  Changing LORES_SIZE then changes how FAR
+# the camera can see and nothing else.
 MOTION_SCALE = MOTION_WIDTH / 320.0
 
 
@@ -117,335 +101,105 @@ def odd(value):
 BLUR_KERNEL = odd(5 * MOTION_SCALE)
 OPEN_SIZE = odd(3 * MOTION_SCALE)
 CLOSE_SIZE = odd(7 * MOTION_SCALE)
-MOTION_PIXELS = MOTION_WIDTH * MOTION_HEIGHT
-
-JPEG_QUALITY = 88
-
-# Each full-resolution buffer is about 9 MB, so keep only a few.
-BUFFER_COUNT = 4
 
 
 # ------------------------------------------------------------
-# Motion detection settings
+# Deciding what counts as motion
 # ------------------------------------------------------------
 
-# How different one pixel must be before we call it "changed".  On a
-# dark night the sensor turns up its gain and invents differences of its
-# own, so this is only a floor: the real threshold is raised to sit
-# above whatever noise the frame actually has.
+# How different one pixel must be before we call it "changed".  On a dark
+# night the sensor turns up its gain and invents differences of its own, so
+# this is only a floor: the real threshold rises to sit above whatever noise
+# the frame actually has, and is capped so a big shadow cannot blind us.
 PIXEL_THRESHOLD = 25
 NOISE_MULTIPLIER = 4
-
-# ...but not without limit, or a big shadow would blind the camera for
-# as long as it lasted.
 MAX_PIXEL_THRESHOLD = 75
 
-# Blob sizes are written as a fraction of the frame so they keep their
-# meaning if you ever change LORES_SIZE.
-#
-# MIN_BLOB_FRACTION was measured, not guessed.  On wildlifecam4, pointed
-# at the patio, a fern frond at the right-hand edge of the frame waved in
-# the breeze all afternoon and produced blobs of 19 to 95 pixels, over and
-# over, in the same spot.  Real motion at the same camera -- a person on
-# the path, a hand near the lens -- produced 8,960 pixels and upwards.
-# Two orders of magnitude apart, so the floor goes between them, nearer
-# the weeds than the wildlife.
-#
-# Note what does NOT work here: waiting for a second sighting.  A leaf
-# that gusts and drops does fail that test, but a frond in a steady
-# breeze keeps moving, in one place, for hours -- so it confirms itself
-# perfectly.  Persistence catches twitchy noise; only size catches a
-# plant that genuinely will not sit still.
-#
-# The cost is real: this floor gives up on an animal smaller than about
-# 150 px, which at this lens is a squirrel beyond ~10 m or a deer beyond
-# ~40 m.  If a camera looks down a long trail rather than at a patio,
-# measure its own site with --record and lower this for that camera.
-MIN_BLOB_FRACTION = 0.00098       # ~300 px at 640x480
-STRONG_BLOB_FRACTION = 0.0043     # ~330 px: big enough to save on sight
+# Blob sizes as a fraction of the frame, so they keep their meaning if you
+# change LORES_SIZE.
+MIN_BLOB_FRACTION = 0.00098       # ~300 px at 640x480: below this is noise
+STRONG_BLOB_FRACTION = 0.0043     # ~1320 px: big enough to save on sight
 
 MIN_BLOB_AREA = int(MIN_BLOB_FRACTION * MOTION_PIXELS)
 STRONG_BLOB_AREA = int(STRONG_BLOB_FRACTION * MOTION_PIXELS)
 
-# Shape gates.  Blowing grass and swaying branches make thin, stringy,
-# hollow blobs.  Animals make solid, compact ones.
-#
-# Nothing with a backbone is eight times longer than it is wide, so the
-# aspect test applies to every blob, however big.  A grass stem stays a
-# grass stem at any size.  The hollowness test is only used on small
-# blobs, because a big animal half hidden behind brush really can come
-# out sparse and we would rather keep it.
+# Shape.  Blowing grass makes thin, stringy, hollow blobs; animals make
+# solid ones.  MAX_ASPECT is deliberately loose and should stay loose: a fox
+# with its tail out is three times longer than tall, a weasel four or five,
+# and a rule fitted to the proportions of whatever animal you photographed
+# first will throw away all the others.
 MIN_EXTENT = 0.30                 # blob area / bounding box area
 MAX_ASPECT = 8.0                  # longest side / shortest side
 
-# Note on MAX_ASPECT: it is deliberately loose, and stays loose.  A crow is
-# compact and tightening this to 3 would have removed 40% of a day's false
-# positives at no cost to the crow -- but a fox with its tail out is about
-# 3.1 times longer than tall, a cougar 3.3, a weasel 4 or 5, and the blob
-# can include the animal's own cast shadow on top of that.  A rule fitted
-# to the proportions of the one animal we happened to photograph would
-# throw away exactly the animals worth having.  The texture tests below do
-# the same job without any assumption about shape.
-
-# Here is the hard part.  One pixel covers about 0.36 cm for every metre
-# of distance, so a 10 cm leaf 2 m away covers MORE pixels than a 1.5 m
-# deer 30 m away.  Size alone can never tell them apart.  What does tell
-# them apart is that a leaf blows back to where it started and an animal
-# does not, so a small blob has to still be there on the next check.
+# One pixel covers about 0.36 cm for every metre of distance, so a 10 cm leaf
+# 2 m away covers MORE pixels than a 1.5 m deer 30 m away.  Size alone can
+# never tell them apart.  What does is that a leaf blows back to where it
+# started and an animal does not, so a small blob has to still be there on
+# the next check.
 CONFIRM_CHECKS = 2
-CONFIRM_RADIUS = int(40 * MOTION_SCALE)   # px the centre may travel per check
+CONFIRM_RADIUS = int(40 * MOTION_SCALE)
 CONFIRM_TIMEOUT = 1.5             # s before we forget a half-confirmed blob
 
-# Whole-scene changes.  Lots of change is only suspicious when no single
-# blob owns most of it.  One big lump is an animal standing close to the
-# camera; change scattered over the whole frame is cloud shadow or wind.
+# Lots of change is only suspicious when no single blob owns most of it.  One
+# big lump is an animal standing close; change scattered over the whole frame
+# is wind through the treeline.
 BUSY_FRACTION = 0.35
 DOMINANT_RATIO = 0.50
 
-# When MOST of the frame moves the same way at once -- everything a bit
-# darker together, everything a bit lighter together -- that is the light
-# changing, not an animal.
-#
-# We measure it with the MIDDLE signed difference of the whole frame.
-# "Signed" matters: grainy noise pushes just as many pixels up as down,
-# so it cancels out to zero, while a passing cloud pushes every pixel the
-# same way.  That one number tells the two apart.
-#
-# This also covers the camera adjusting its own exposure, which changes
-# every pixel at once in exactly the same way.
+# When MOST of the frame moves the same way at once -- everything darker
+# together, everything lighter together -- the light changed, not the scene.
+# Measured as the MIDDLE SIGNED difference: grainy noise pushes as many
+# pixels up as down and cancels to zero, while a cloud pushes them all one
+# way.  That one number tells the two apart, and it also covers the camera
+# adjusting its own exposure.
 LIGHTING_SHIFT = 10
 
-# Telling a shadow from an animal, without guessing at its shape.
-#
-# A whole day under a tree produced 750 photographs, and nine out of ten
-# were the shadow of a branch sliding across the concrete.  Two things
-# separate those from an animal, and neither cares how long the animal is:
-#
-#   range - the spread of brightness inside the blob.  A real object has
-#           light parts and dark parts.  A shadow is the SAME concrete,
-#           uniformly dimmed, so its spread stays small.
-#   edge  - the strongest edges inside the blob.  An animal has a hard
-#           silhouette against the ground.  A shadow has a soft penumbra.
-#
-# Measured on that day: every one of the 71 crow frames had a range above
-# 144 and edges above 500, while the median shadow managed 103 and 107.
-# The thresholds sit well below the bird and well above the shadow.
-#
-# A blob that fails these is not thrown away outright -- the AI can still
-# rescue it -- because a pale animal in flat light could plausibly fail
-# both, and the training bursts record it regardless either way.
-SHADOW_MIN_RANGE = 110
-SHADOW_MIN_EDGE = 250
-
 # Below this average brightness the sensor is mostly amplifying its own
-# noise, and nothing we saved would be usable anyway.
+# noise.  This camera has no infra-red lamp, so after dusk it is simply
+# blind, and nothing it saved would be worth looking at.
 MIN_MEAN_LUMA = 25
 
-# How long the background takes to forget the past, in seconds.
-#
-# Where nothing is happening it has to keep up with the world quietly
-# drifting: the sun moving, shadows creeping across a patio, the camera
-# settling a hair on soft ground.  Ten seconds keeps up with all of that.
+# How long the background takes to forget, in seconds.  Where nothing is
+# happening it must keep up with the sun moving and shadows creeping.
 BACKGROUND_TAU = 10.0
 
 # Underneath whatever IS moving it learns four times more slowly, so an
-# animal that stops to browse does not dissolve into the scenery while we
-# are still watching it.
-#
-# But it does still learn, and that is the whole point.  An earlier
-# version froze the moving region completely -- it only learned where the
-# mask was clear.  A pixel that once looked different therefore stayed
-# different for ever, so the tiniest camera shake wrote a permanent scar
-# along every sharp edge in the scene, the scars grew into each other,
-# and the camera photographed an empty patio 48 times in two minutes.
+# animal that stops to browse does not dissolve into the scenery.  But it
+# does still learn, and that is the whole point: an earlier version froze
+# the moving region completely, so any pixel that once looked different
+# stayed different for ever, and the tiniest camera shake wrote a permanent
+# scar along every sharp edge in the scene.
 BACKGROUND_TAU_BUSY = 40.0
 
-# ...and how fast it re-learns just after a lighting change.
+# ...and how fast it re-learns just after the light changes.
 SETTLE_ALPHA = 0.25
 SETTLE_CHECKS = 8
 
-
-# ------------------------------------------------------------
-# Timing and rate limits
-# ------------------------------------------------------------
-
 LOOP_DELAY = 0.25                 # check four times a second
-WARMUP_SECONDS = 5.0              # let exposure and white balance settle
-
+WARMUP_SECONDS = 5.0
 SAVE_COOLDOWN = 2.0
-MAX_SAVES_PER_HOUR = 240          # a stuck camera cannot fill the card
-
-DISK_FULL_PERCENT = 95.0
-DISK_CHECK_INTERVAL = 10.0
-
-HEARTBEAT_INTERVAL = 300.0        # prove we are alive in journalctl
-
-# ------------------------------------------------------------
-# Training bursts
-# ------------------------------------------------------------
-
-# A detector cannot be judged using only the pictures it chose to keep.
-# If it ignores every distant fox, its own photo album will never contain
-# one, and it will look perfect.  So now and then the camera records a
-# plain run of frames with the motion rules switched off, and those
-# unbiased frames are what we test new ideas against offline.
-#
-# See ai/evaluation-design.md for what happens to them on the laptop.
-
-# This is ON by default, so a camera starts collecting the moment the
-# file is copied across, with nothing else to remember.  The first burst
-# begins immediately rather than an hour later.
-RECORD_BY_DEFAULT = True
-
-RECORD_EVERY = 3600.0             # start a burst this often, in seconds
-RECORD_LENGTH = 30.0              # keep recording for this long
-RECORD_PREFIX = "train"
-
-# A burst is recorded twice over, because the two jobs want different
-# pictures and the first afternoon of collecting made that obvious.
-#
-# 1311 unbiased frames came back from a quiet patio.  99.3% of them were
-# "quiet", and within a burst each frame differed from the first by a
-# median of 0.22% of its pixels.  Fifty-seven near-identical 682 KB
-# photographs an hour is a lot of sync for very little new information.
-#
-# What the MOTION rules need is the little 320x240 grey frame -- because
-# that is literally all they ever look at.  Storing the big colour one
-# and shrinking it later is 23 times the bytes AND less faithful, since
-# it replays a JPEG of a downscale rather than the plane the camera
-# actually handed us.  PNG, so it is exact.
-RECORD_LORES_INTERVAL = 0.0       # 0 = every single check (the loop rate)
-
-# What SPECIES identification needs is the big colour one, and it does
-# not need many: MegaDetector on the laptop wants a recognisable animal,
-# not a smooth film.
-RECORD_FULL_INTERVAL = 10.0       # seconds between full-resolution frames
-
-# ...and one straight away whenever anything at all stirs, however small.
-# Animals are rare.  On a quiet patio this costs nothing, and when
-# something finally does walk past it is the difference between having a
-# training set and having a training set with an animal in it.  The
-# threshold is deliberately far below the one that keeps a photograph, so
-# it catches things the rules themselves would ignore.
-#
-# This does NOT bias the measurements: the little frames keep recording
-# every check regardless, so we can still see what the rules missed.
-RECORD_MOTION_FRACTION = 0.0003   # ~92 px at 640x480, a sixth of the floor
-RECORD_MOTION_AREA = int(RECORD_MOTION_FRACTION * MOTION_PIXELS)
-RECORD_MOTION_INTERVAL = 1.0      # at most one a second while it lasts
-
-# After dark the sensor gives us a black rectangle with noise in it, and
-# nobody can identify an animal in that -- neither MegaDetector nor a
-# Scout.  So bursts wait for the light.  This is higher than
-# MIN_MEAN_LUMA, which is only asking "can we tell motion from noise";
-# here we are asking "would this picture be worth looking at".  Daylight
-# on the patio measured about 120.
-RECORD_MIN_LUMA = 40
-RECORD_DARK_RETRY = 600.0         # try again in ten minutes, to catch dawn
-
-# Sizes measured on real frames from wildlifecam4:
-#
-#   full 2028x1520 colour JPEG    682 KB
-#   lores 320x240 grey PNG         54 KB   (exact, what the rules see)
-#
-#   30 s burst, lores at 4 Hz + full every 10 s  =  ~8 MB
-#   hourly, all day                              = ~200 MB
-#
-# The old settings -- 60 s of full-resolution frames every 10 minutes --
-# came to 5.6 GB a day for the same information.
-
-# Know what this costs before leaving it running.  At roughly 450 KB a
-# frame, one burst a minute in six:
-#
-#     60 frames an hour  x  6 bursts  =   360 frames  ~=  160 MB an hour
-#                                                        3.8 GB a day
-#
-# That is sized for a tuning session of an hour or two, not for a season
-# in the woods.  Before leaving a camera out unattended, put RECORD_EVERY
-# back to 3600 (one burst an hour, ~650 MB a day) or set RECORD_BY_DEFAULT
-# to False.  The disk guard stops training frames at 95% full either way,
-# so a forgotten setting cannot fill a card, but it can make the sync
-# slow and dull.
-
-# Whenever we keep a photograph we keep a second copy with the boxes
-# drawn on: the blue one the motion rules found, the green ones the AI
-# recognised.  Looking at those side by side is far and away the quickest
-# way to see WHY the camera made a decision, which is the whole point of
-# the exercise.
-#
-# The cost is real and worth knowing: it doubles the storage on the card
-# and doubles the sync time.  --no-annotated turns it off if a card ever
-# gets tight.
-#
-# One thing to remember for the laptop: ingest in ai/design.md walks
-# <camera>/<date>/*.jpg, so it must skip anything ending in
-# _annotated.jpg or every event will be counted twice.
-SAVE_ANNOTATED = True
 
 
 # ------------------------------------------------------------
-# AI settings
+# The AI, which may only ever say yes
 # ------------------------------------------------------------
 
-# The AI never decides whether we save, so these are only ever used to
-# add evidence, not to take it away.
 MIN_AI_CONFIDENCE = 0.25          # worth writing into the JSON
 MIN_AI_RESCUE_CONFIDENCE = 0.40   # worth promoting a weak blob
 MIN_AI_HINT_CONFIDENCE = 0.45     # worth flagging as probably an animal
 
-# The AI recognises the furniture too.  A bench, a chair, a fence post is
-# detected in every single frame, and its box is huge -- so a stray blob
-# of noise that happens to land inside it would be "confirmed" by an
-# object that has not moved all day.  To count as support, the AI's box
-# has to be roughly the size of the thing that actually moved.
+# The AI recognises the furniture too.  A bench is detected in every single
+# frame with a box covering a sixth of the scene, so a stray blob of noise
+# landing inside it would be "confirmed" by something that has not moved all
+# day.  To count as support, its box must be about the size of what moved.
 MAX_AI_BOX_RATIO = 20
 
-# COCO has no deer, raccoon, squirrel or coyote, so a real animal here
-# usually lands on the nearest thing the model does happen to know.
+# COCO has no deer, raccoon, squirrel or coyote, so a real animal usually
+# lands on the nearest thing the model does happen to know.
 ANIMAL_CLASSES = {
-    "bird",
-    "cat",
-    "dog",
-    "horse",
-    "sheep",
-    "cow",
-    "elephant",
-    "bear",
-    "zebra",
-    "giraffe",
-    "teddy bear",
+    "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "teddy bear",
 }
-
-
-# ------------------------------------------------------------
-# Command line
-# ------------------------------------------------------------
-
-parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-
-parser.add_argument("--dry-run", action="store_true",
-                    help="save no photographs; write measurements to CSV "
-                         "so you can choose your own thresholds")
-
-parser.add_argument("--no-annotated", action="store_true",
-                    help="do not save the _annotated.jpg copy with the "
-                         "boxes drawn on (saves half the card space)")
-
-parser.add_argument("--no-record", action="store_true",
-                    help=f"do not record the {RECORD_LENGTH:.0f} second burst "
-                         f"of training frames taken every "
-                         f"{RECORD_EVERY / 60:.0f} minutes whether anything is "
-                         f"happening or not")
-
-parser.add_argument("--photo-dir", default=PHOTO_DIR,
-                    help=f"where photographs go (default: {PHOTO_DIR})")
-
-options = parser.parse_args()
-
-photo_dir = options.photo_dir
-dry_run = options.dry_run
-save_annotated = SAVE_ANNOTATED and not options.no_annotated
-recording_enabled = RECORD_BY_DEFAULT and not options.no_record
 
 
 # ------------------------------------------------------------
@@ -461,77 +215,68 @@ labels = intrinsics.labels
 
 picam2 = Picamera2(imx500.camera_num)
 
-config = picam2.create_preview_configuration(
+picam2.configure(picam2.create_preview_configuration(
     main={"size": MAIN_SIZE, "format": MAIN_FORMAT},
     lores={"size": LORES_SIZE, "format": "YUV420"},
     controls={"FrameRate": intrinsics.inference_rate},
     buffer_count=BUFFER_COUNT,
-)
+))
 
 print("Loading AI model...")
-
-# The progress bar is for people, not for the systemd journal.
-if sys.stdout.isatty():
-    imx500.show_network_fw_progress_bar()
-
-picam2.configure(config)
 picam2.start()
 
 
 # ------------------------------------------------------------
-# Reading the AI results
+# Reading what the sensor's own AI thinks it can see
 # ------------------------------------------------------------
 
 def get_ai_detections(metadata):
-    """Return whatever the sensor's own AI model thinks it can see.
-
-    Every box comes back in full-resolution photograph pixels, the same
-    coordinates we use for the motion box, so the laptop never has to
-    guess which picture a box belongs to.
-    """
+    """Every box comes back in full-resolution photograph pixels."""
     outputs = imx500.get_outputs(metadata, add_batch=True)
 
     if outputs is None:
         return []
 
-    boxes = outputs[0][0]
-    scores = outputs[1][0]
-    classes = outputs[2][0]
+    boxes, scores, classes = outputs[0][0], outputs[1][0], outputs[2][0]
 
     _, input_height = imx500.get_input_size()
 
     if intrinsics.bbox_normalization:
         boxes = boxes / input_height
-
     if intrinsics.bbox_order == "xy":
         boxes = boxes[:, [1, 0, 3, 2]]
 
-    detections = []
+    found = []
 
     for box, score, category in zip(boxes, scores, classes):
         if score < MIN_AI_CONFIDENCE:
             continue
 
-        name = labels[int(category)]
-
         x, y, w, h = imx500.convert_inference_coords(box, metadata, picam2)
 
-        detections.append({
-            "class": name,
+        found.append({
+            "class": labels[int(category)],
             "confidence": float(score),
             "box": [int(x), int(y), int(w), int(h)],
         })
 
-    return detections
+    return found
+
+
+def boxes_overlap(first, second):
+    ax, ay, aw, ah = first
+    bx, by, bw, bh = second
+    return (ax < bx + bw and bx < ax + aw
+            and ay < by + bh and by < ay + ah)
 
 
 def ai_supports(detections, motion_box):
-    """True if the AI sees SOMETHING solid where the motion was.
+    """True if the AI sees something solid, about the right size, right there.
 
-    We deliberately accept any class, not just the animal ones.  A
-    raccoon might come back as "cat", a turkey as "bird", a fawn as
-    "dog".  All we are asking is whether the model agrees that an object
-    is there, which is exactly the question a leaf fails.
+    Any class counts, not just the animal ones: a raccoon might come back as
+    "cat", a turkey as "bird", a fawn as "dog".  All we are asking is whether
+    the model agrees an object is there -- which is exactly the question a
+    shadow or a leaf fails.
     """
     _, _, motion_w, motion_h = motion_box
     motion_area = max(motion_w * motion_h, 1)
@@ -542,9 +287,8 @@ def ai_supports(detections, motion_box):
 
         _, _, w, h = detection["box"]
 
-        # Ignore the scenery: see MAX_AI_BOX_RATIO above.
         if w * h > MAX_AI_BOX_RATIO * motion_area:
-            continue
+            continue                      # that is the furniture, not a fox
 
         if boxes_overlap(detection["box"], motion_box):
             return True
@@ -552,44 +296,11 @@ def ai_supports(detections, motion_box):
     return False
 
 
-def boxes_overlap(first, second):
-    ax, ay, aw, ah = first
-    bx, by, bw, bh = second
-
-    return (ax < bx + bw and bx < ax + aw
-            and ay < by + bh and by < ay + ah)
-
-
-def blob_texture(raw_gray, box):
-    """Return (range, edge) for the pixels inside a blob's bounding box.
-
-    Both are measured on the UNBLURRED frame.  The blur that motion
-    detection runs on would soften exactly the hard silhouette we are
-    trying to find, so it would hide the difference we want.
-    """
-    x, y, w, h = box
-
-    patch = raw_gray[y:y + h, x:x + w]
-
-    if patch.size < 25:
-        return 0.0, 0.0
-
-    low, high = np.percentile(patch, (5, 95))
-
-    patch = patch.astype(np.float32)
-    gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
-
-    return float(high - low), float(np.percentile(np.hypot(gx, gy), 99))
-
-
 def to_main_coords(box):
     """Scale a box from the small motion image up to the photograph."""
     x, y, w, h = box
-
     scale_x = MAIN_SIZE[0] / MOTION_WIDTH
     scale_y = MAIN_SIZE[1] / MOTION_HEIGHT
-
     return [int(x * scale_x), int(y * scale_y),
             int(w * scale_x), int(h * scale_y)]
 
@@ -598,20 +309,15 @@ def to_main_coords(box):
 # Remembering a blob from one check to the next
 # ------------------------------------------------------------
 
-# The blob we are waiting on, as (x, y, when, count) -- or None.
-pending = None
+pending = None                    # (x, y, when, count) or None
 
 
 def seen_again(centroid, when):
     """Count how many checks in a row a blob has been in the same place.
 
-    This is the single most useful trick in the whole program.  A leaf
-    blows one way and then blows back, so it is rarely in the same spot
-    twice.  An animal keeps being there.  Counting is enough.
-
-    We do not clear this when a check finds nothing, only when it goes
-    stale -- so an animal that slips behind a tree trunk for a moment
-    still gets counted when it comes out the other side.
+    This is the single most useful trick in the whole program.  A leaf blows
+    one way and then blows back, so it is rarely in the same spot twice.  An
+    animal keeps being there.  Counting is enough.
     """
     global pending
 
@@ -619,75 +325,13 @@ def seen_again(centroid, when):
 
     if pending is not None:
         x, y, seen_at, seen_count = pending
-
         near = (abs(centroid[0] - x) <= CONFIRM_RADIUS
                 and abs(centroid[1] - y) <= CONFIRM_RADIUS)
-
         if near and when - seen_at <= CONFIRM_TIMEOUT:
             count = seen_count + 1
 
     pending = (centroid[0], centroid[1], when, count)
-
     return count
-
-
-# ------------------------------------------------------------
-# Measurement log for choosing thresholds (--dry-run)
-# ------------------------------------------------------------
-
-MEASUREMENT_FIELDS = [
-    "time",
-    "file",
-    "mean_luma",
-    "pixel_threshold",
-    "changed_fraction",
-    "largest_area",
-    "largest_fraction",
-    "extent",
-    "aspect",
-    "blob_range",
-    "blob_edge",
-    "brightness_shift",
-    "confirmations",
-    "exposure_us",
-    "analogue_gain",
-    "ai_class",
-    "ai_confidence",
-    "decision",
-]
-
-measurement_file = None
-measurement_writer = None
-measurement_day = None
-
-
-def log_measurement(now, row):
-    """Append one row of numbers, starting a new file each day."""
-    global measurement_file, measurement_writer, measurement_day
-
-    day = now.strftime("%Y-%m-%d")
-
-    if day != measurement_day:
-        if measurement_file is not None:
-            measurement_file.close()
-
-        day_directory = f"{photo_dir}/{day}"
-        os.makedirs(day_directory, exist_ok=True)
-
-        path = f"{day_directory}/measurements-{CAMERA_NAME}.csv"
-        is_new = not os.path.exists(path)
-
-        measurement_file = open(path, "a", newline="")
-        measurement_writer = csv.DictWriter(measurement_file,
-                                            fieldnames=MEASUREMENT_FIELDS)
-
-        if is_new:
-            measurement_writer.writeheader()
-
-        measurement_day = day
-
-    measurement_writer.writerow(row)
-    measurement_file.flush()
 
 
 # ------------------------------------------------------------
@@ -695,692 +339,274 @@ def log_measurement(now, row):
 # ------------------------------------------------------------
 
 def save_event(now, image, decision, measurements, ai_detections):
-    """Write the photograph and its JSON description."""
-    day_directory = f"{photo_dir}/{now.strftime('%Y-%m-%d')}"
+    """The photograph, a copy with the boxes drawn on, and the numbers."""
+    day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
     os.makedirs(day_directory, exist_ok=True)
 
-    base_filename = now.strftime("%H%M%S")
+    base = now.strftime("%H%M%S")
+    filename = f"{day_directory}/{base}.jpg"
 
-    original_filename = f"{day_directory}/{base_filename}.jpg"
-    json_filename = f"{day_directory}/{base_filename}.json"
-
-    cv2.imwrite(original_filename, image,
-                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    cv2.imwrite(filename, image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
 
     animal_hint = any(
-        detection["class"] in ANIMAL_CLASSES
-        and detection["confidence"] >= MIN_AI_HINT_CONFIDENCE
-        for detection in ai_detections
+        d["class"] in ANIMAL_CLASSES
+        and d["confidence"] >= MIN_AI_HINT_CONFIDENCE
+        for d in ai_detections
     )
 
-    information = {
-        "camera": CAMERA_NAME,
-        "code": CODE_VERSION,
-        "time": now.isoformat(),
+    with open(f"{day_directory}/{base}.json", "w") as f:
+        json.dump({
+            "time": now.isoformat(),
+            "image": {"file": f"{base}.jpg",
+                      "width": MAIN_SIZE[0], "height": MAIN_SIZE[1]},
+            "trigger": decision,
+            # every box in this file is in full-resolution photograph pixels
+            "motion": measurements,
+            "ai": {"animal_hint": animal_hint, "detections": ai_detections},
+        }, f, indent=2)
 
-        "image": {
-            "file": os.path.basename(original_filename),
-            "width": MAIN_SIZE[0],
-            "height": MAIN_SIZE[1],
-        },
-
-        "trigger": decision,
-
-        # Every box in this file, motion and AI alike, is in
-        # full-resolution photograph pixels.
-        "motion": measurements,
-
-        "ai": {
-            "model": os.path.basename(MODEL),
-            "animal_hint": animal_hint,
-            "detections": ai_detections,
-        },
-    }
-
-    with open(json_filename, "w") as file:
-        json.dump(information, file, indent=2)
-
-    if save_annotated:
-        save_annotated_copy(day_directory, base_filename, image,
-                            measurements["box"], ai_detections)
-
-    return original_filename, animal_hint
-
-
-def training_name(now, suffix):
-    """<time>_<milliseconds>.<suffix>, in its own training/ subdirectory.
-
-    The subdirectory keeps these out of the laptop's "walk every *.jpg"
-    step, so they cannot be mistaken for wildlife photographs.  The
-    milliseconds let a program replaying the burst offline know exactly
-    how far apart the frames really were instead of assuming.
-    """
-    training_directory = f"{photo_dir}/{now.strftime('%Y-%m-%d')}/training"
-    os.makedirs(training_directory, exist_ok=True)
-
-    return (f"{training_directory}/{RECORD_PREFIX}_{now.strftime('%H%M%S')}"
-            f"_{now.microsecond // 1000:03d}.{suffix}")
-
-
-def save_training_lores(now, raw_lores):
-    """Save exactly the buffer the camera handed us, losslessly.
-
-    Unblurred and uncompressed, so replaying it offline runs the very
-    same pipeline over the very same pixels.
-
-    We keep the COLOUR planes as well, even though today's rules only
-    read brightness, because it costs 30% more and cannot be recovered
-    later.  Two things we may well want it for:
-
-      * A shadow keeps its colour and only changes brightness.  That is
-        the standard way to tell a cloud passing over from an animal
-        walking past, and it is the one false positive we gave up on.
-      * Green leaves against a brown animal separate far better in
-        colour than in grey.
-
-    The file is the raw YUV420 buffer, so it reads back as a tall thin
-    grey image.  To get a picture out of it:
-
-        buf = cv2.imread(name, cv2.IMREAD_GRAYSCALE)
-        grey   = buf[:240]                                     # what the rules saw
-        colour = cv2.cvtColor(buf, cv2.COLOR_YUV2BGR_I420)     # the full frame
-    """
-    name = training_name(now, "png")
-    cv2.imwrite(name, raw_lores)
-    return os.path.basename(name)
-
-
-def save_training_frame(now, image):
-    """Save a full-resolution colour frame for the laptop to identify."""
-    training_directory = f"{photo_dir}/{now.strftime('%Y-%m-%d')}/training"
-    os.makedirs(training_directory, exist_ok=True)
-
-    name = (f"{RECORD_PREFIX}_{now.strftime('%H%M%S')}"
-            f"_{now.microsecond // 1000:03d}.jpg")
-
-    cv2.imwrite(f"{training_directory}/{name}", image,
-                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-
-    return name
-
-
-def save_annotated_copy(day_directory, base_filename, image,
-                        motion_box, ai_detections):
-    """Save a second copy of the photograph with the boxes drawn on.
-
-    Blue is the patch of connected pixels the motion rules found.  Green
-    is whatever the camera's own AI recognised, with how sure it was.
-    When the camera saves a picture of nothing, this is the copy that
-    tells you which rule to go and argue with.
-
-    It sits next to the original as <time>_annotated.jpg.
-    """
+    # The annotated copy is how you see WHY the camera kept a picture: blue
+    # is the patch of connected pixels that moved, green is whatever the AI
+    # recognised.  Open it next to the original.
     annotated = image.copy()
 
-    if motion_box is not None:
-        x, y, w, h = motion_box
-
+    if measurements["box"]:
+        x, y, w, h = measurements["box"]
         cv2.rectangle(annotated, (x, y), (x + w, y + h), (255, 0, 0), 3)
         cv2.putText(annotated, "MOTION", (x, max(y - 10, 24)),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3)
 
-    for detection in ai_detections:
-        x, y, w, h = detection["box"]
-
-        label = f"{detection['class']} {detection['confidence']:.0%}"
-
+    for d in ai_detections:
+        x, y, w, h = d["box"]
         cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 3)
-        cv2.putText(annotated, label, (x, max(y - 10, 24)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3)
+        cv2.putText(annotated, f"{d['class']} {d['confidence']:.0%}",
+                    (x, max(y - 10, 24)), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0, (0, 255, 0), 3)
 
-    cv2.imwrite(f"{day_directory}/{base_filename}_annotated.jpg", annotated,
+    cv2.imwrite(f"{day_directory}/{base}_annotated.jpg", annotated,
                 [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+
+    return filename
 
 
 # ------------------------------------------------------------
-# Let the camera settle, then learn the background
+# Let the camera settle, then learn what the scene looks like
 # ------------------------------------------------------------
 
 print(f"Warming up for {WARMUP_SECONDS:.0f} seconds...")
-
 time.sleep(WARMUP_SECONDS)
 
 request = picam2.capture_request()
-
 try:
     lores = request.make_array("lores")
-    gray = lores[:MOTION_HEIGHT, :MOTION_WIDTH]
-    background = cv2.GaussianBlur(gray, (BLUR_KERNEL, BLUR_KERNEL), 0).astype("float32")
+    background = cv2.GaussianBlur(
+        lores[:MOTION_HEIGHT, :MOTION_WIDTH].copy(),
+        (BLUR_KERNEL, BLUR_KERNEL), 0).astype("float32")
 finally:
     request.release()
 
-OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (OPEN_SIZE, OPEN_SIZE))
-CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (CLOSE_SIZE, CLOSE_SIZE))
+OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (OPEN_SIZE,) * 2)
+CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (CLOSE_SIZE,) * 2)
 
 BACKGROUND_ALPHA = min(1.0, LOOP_DELAY / BACKGROUND_TAU)
 BACKGROUND_ALPHA_BUSY = min(1.0, LOOP_DELAY / BACKGROUND_TAU_BUSY)
 
 settle_checks = 0
-
-# The next burst starts immediately, so a tuning session gets data at
-# once instead of an hour from now.
-record_next = time.time() if recording_enabled else None
-record_until = 0.0
-record_last = 0.0
-record_lores_last = 0.0
-waiting_for_light = False
-
 last_save_time = 0.0
-save_times = []
 
-disk_ok = True
-last_disk_check = 0.0
-last_heartbeat = time.time()
-
-print(f"step7 code {CODE_VERSION}, photographs {MAIN_SIZE[0]}x{MAIN_SIZE[1]} "
-      f"into {photo_dir}")
-print(f"Watching for wildlife on {CAMERA_NAME}"
-      f"{' (dry run: saving nothing)' if dry_run else ''}...")
-print(f"  blob >= {MIN_BLOB_AREA} px needs confirming, "
-      f">= {STRONG_BLOB_AREA} px saves on sight")
-
-if recording_enabled:
-    print(f"  recording a {RECORD_LENGTH:.0f} second training burst every "
-          f"{RECORD_EVERY / 60:.0f} minutes into training/: "
-          f"{LORES_SIZE[0]}x{LORES_SIZE[1]} every check, full colour every "
-          f"{RECORD_FULL_INTERVAL:.0f} s or whenever a blob reaches "
-          f"{RECORD_MOTION_AREA} px, and only above luma {RECORD_MIN_LUMA}")
+print(f"Watching for wildlife.  A blob of {MIN_BLOB_AREA} px needs "
+      f"confirming; {STRONG_BLOB_AREA} px saves on sight.")
 
 
 # ------------------------------------------------------------
-# Main wildlife loop
+# The main loop
 # ------------------------------------------------------------
 
 while True:
 
+    now = datetime.now()
+    moment = time.time()
+
+    request = picam2.capture_request()
+
     try:
-        now = datetime.now()
-        moment = time.time()
-
-        # ----------------------------------------------------
-        # Protect the filesystem, but stay alive
-        # ----------------------------------------------------
-
-        if moment - last_disk_check >= DISK_CHECK_INTERVAL:
-            total, used, free = shutil.disk_usage("/")
-            percent_used = used / total * 100
-
-            was_ok = disk_ok
-            disk_ok = percent_used < DISK_FULL_PERCENT
-
-            if was_ok and not disk_ok:
-                print(f"Filesystem is {percent_used:.1f}% full. "
-                      f"Not saving until photographs are synced away.")
-            elif disk_ok and not was_ok:
-                print("There is room again. Saving resumed.")
-
-            last_disk_check = moment
-
-        # ----------------------------------------------------
-        # One frame, and the AI result that came with it
-        # ----------------------------------------------------
-
-        request = picam2.capture_request()
-
-        try:
-            metadata = request.get_metadata()
-
-            # The Y plane of the small stream is already greyscale.
-            lores = request.make_array("lores")
-
-            # Keep the plane exactly as the camera handed it over.  This
-            # is what a training frame stores: blurring first and saving
-            # that would make an offline replay blur a second time, and
-            # measure a slightly different picture from the live one.
-            # The whole YUV420 buffer: the Y (brightness) plane the rules
-            # use, followed by quarter-size U and V (colour) planes.  We
-            # keep all of it for training frames -- see save_training_lores.
-            raw_lores = lores[:MOTION_HEIGHT * 3 // 2, :MOTION_WIDTH].copy()
-
-            gray = cv2.GaussianBlur(raw_lores[:MOTION_HEIGHT],
-                                    (BLUR_KERNEL, BLUR_KERNEL), 0)
-
-            # ------------------------------------------------
-            # Compare against the learned background
-            # ------------------------------------------------
-
-            background_image = background.astype("uint8")
-
-            # Keep the SIGN of the difference.  It is what separates
-            # "everything got darker together" (the light changed) from
-            # "some pixels went each way" (something moved).
-            signed = (gray.astype(np.int16)
-                      - background_image.astype(np.int16))
-
-            shift = float(np.median(signed))
-
-            # The typical size of a difference IS the noise level, so let
-            # it set the threshold.  A calm afternoon keeps 25; a grainy
-            # night raises it by itself.
-            noise = float(np.median(np.abs(signed)))
-
-            pixel_threshold = min(
-                MAX_PIXEL_THRESHOLD,
-                max(PIXEL_THRESHOLD, int(NOISE_MULTIPLIER * noise + 5)))
-
-            difference = cv2.absdiff(gray, background_image)
-
-            _, mask = cv2.threshold(difference, pixel_threshold, 255,
-                                    cv2.THRESH_BINARY)
-
-            # Open first to rub out lone speckles, then close to join a
-            # broken-up animal into one shape.  Closing does not inflate
-            # the area the way a plain dilate does, so the blob sizes
-            # below mean what they say.
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, OPEN_KERNEL)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, CLOSE_KERNEL)
-
-            changed_fraction = cv2.countNonZero(mask) / MOTION_PIXELS
-
-            # ------------------------------------------------
-            # Find the biggest patch of connected pixels
-            # ------------------------------------------------
-
-            count, _, stats, centroids = cv2.connectedComponentsWithStats(
-                mask, connectivity=8)
-
-            largest_area = 0
-            largest_box = None
-            largest_centroid = None
-
-            for index in range(1, count):
-                area = int(stats[index, cv2.CC_STAT_AREA])
-
-                if area > largest_area:
-                    largest_area = area
-                    largest_box = (
-                        int(stats[index, cv2.CC_STAT_LEFT]),
-                        int(stats[index, cv2.CC_STAT_TOP]),
-                        int(stats[index, cv2.CC_STAT_WIDTH]),
-                        int(stats[index, cv2.CC_STAT_HEIGHT]),
-                    )
-                    largest_centroid = (float(centroids[index][0]),
-                                        float(centroids[index][1]))
-
-            largest_fraction = largest_area / MOTION_PIXELS
-
-            if largest_box is not None:
-                blob_range, blob_edge = blob_texture(
-                    raw_lores[:MOTION_HEIGHT], largest_box)
-            else:
-                blob_range, blob_edge = 0.0, 0.0
-
-            if largest_box is not None:
-                _, _, box_w, box_h = largest_box
-                extent = largest_area / float(max(box_w * box_h, 1))
-                aspect = max(box_w, box_h) / float(max(min(box_w, box_h), 1))
-            else:
-                extent = 0.0
-                aspect = 0.0
-
-            # ------------------------------------------------
-            # How bright is it?
-            # ------------------------------------------------
-
-            mean_luma = float(gray.mean())
-
-            # Not used to decide anything -- just handy to know later,
-            # when we are looking at a photograph and wondering why it
-            # came out blurry.
-            exposure_us = int(metadata.get("ExposureTime", 0))
-            analogue_gain = float(metadata.get("AnalogueGain", 1.0))
-
-            # ------------------------------------------------
-            # Decide, in order.  The first rule that matches wins.
-            #
-            #   1. too dark to see anything      -> skip
-            #   2. the light changed             -> skip
-            #   3. the whole treeline is moving  -> skip
-            #   4. too small, or the wrong shape -> skip
-            #   5. flat inside, soft edges       -> skip (a shadow)
-            #   6. a big blob                    -> SAVE
-            #   7. a small blob, seen twice      -> SAVE
-            #   8. a small blob the AI agrees on -> SAVE
-            #   9. anything else                 -> wait and see
-            #
-            # Notice that the AI only ever appears in rule 7, and only
-            # ever says yes.  It can turn a maybe into a photograph; it
-            # can never stop one.  That is deliberate: the model knows 80
-            # everyday objects and not one of them is a deer, so a "no"
-            # from it means nothing at all.
-            # ------------------------------------------------
-
-            decision = "quiet"
-            save_now = False
-            ai_detections = []
-            confirmations = 0
-
-            big_enough = largest_area >= MIN_BLOB_AREA
-            strong = largest_area >= STRONG_BLOB_AREA
-
-            # A grass stem is thin at any size, so the aspect test applies
-            # to every blob.  The hollowness test only applies to small
-            # ones: a big animal half hidden behind brush can genuinely
-            # come out sparse, and we would rather keep it.
-            right_shape = (aspect <= MAX_ASPECT
-                           and (strong or extent >= MIN_EXTENT))
-
-            motion_box = to_main_coords(largest_box) if largest_box else None
-
-            if mean_luma < MIN_MEAN_LUMA:
-                # 1. At night, with no infra-red lamp, the sensor turns
-                # its gain right up and mostly photographs its own noise.
-                decision = "too dark"
-                pending = None
-
-            elif abs(shift) >= LIGHTING_SHIFT:
-                # 2. Most of the frame moved the same way at once: a
-                # cloud, or dusk, or the camera re-metering.
-                #
-                # An animal close enough to fill over half the view would
-                # also land here and be skipped.  That is a fair trade:
-                # to get that close it had to walk through the middle
-                # distance first, and we already photographed it there.
-                decision = "lighting change"
-                pending = None
-
-            elif (changed_fraction >= BUSY_FRACTION
-                    and largest_fraction < DOMINANT_RATIO * changed_fraction):
-                # 3. Plenty of change, but broken into scraps with no
-                # single lump owning most of it -- wind through the whole
-                # treeline.  An animal is ONE lump, however big, so a deer
-                # standing close falls through to rule 5 instead.
-                decision = "scene change"
-                pending = None
-
-            elif not (big_enough and right_shape):
-                # 4. Too small to be anything, or too thin and stringy to
-                # be an animal.
-                if big_enough:
-                    decision = "wrong shape"
-
-            elif not (blob_range >= SHADOW_MIN_RANGE
-                      and blob_edge >= SHADOW_MIN_EDGE):
-                # 5. Flat inside and soft at the edges: the same ground,
-                # dimmed.  A branch's shadow sliding across the concrete
-                # looks like this at any size and any shape.  Only the AI
-                # can rescue it, because persistence cannot -- a shadow
-                # creeps steadily and confirms itself perfectly.
-                ai_detections = get_ai_detections(metadata)
-
-                if motion_box and ai_supports(ai_detections, motion_box):
-                    decision = "shadow-like, AI agrees"
-                    save_now = True
-                else:
-                    decision = "shadow"
-                    pending = None
-
-            elif strong:
-                # 6. Big, with real structure in it.  Take the picture.
-                decision = "strong motion"
-                save_now = True
-
-            else:
-                # Small.  This is where a distant deer and a nearby leaf
-                # look exactly alike, so we need a second opinion.
-                confirmations = seen_again(largest_centroid, moment)
-
-                if confirmations >= CONFIRM_CHECKS:
-                    # 7. Still there, in the same place, a moment later.
-                    # The leaf blew back; this did not.
-                    decision = "confirmed motion"
-                    save_now = True
-
-                else:
-                    # 8. Only seen once so far -- but if the AI can see an
-                    # object right there, that is good enough. This is
-                    # what catches an animal far away on the very first
-                    # frame instead of a quarter-second later.
-                    ai_detections = get_ai_detections(metadata)
-
-                    if ai_supports(ai_detections, motion_box):
-                        decision = "small blob, AI agrees"
-                        save_now = True
-                    else:
-                        # 9. Wait and see.
-                        decision = "waiting for confirmation"
-
-            # ------------------------------------------------
-            # Rate limits
-            # ------------------------------------------------
-
-            if save_now:
-                save_times = [t for t in save_times if moment - t < 3600.0]
-
-                if dry_run:
-                    decision += " (dry run)"
-                    save_now = False
-                elif not disk_ok:
-                    decision += " (disk full)"
-                    save_now = False
-                elif moment - last_save_time < SAVE_COOLDOWN:
-                    decision += " (cooldown)"
-                    save_now = False
-                elif len(save_times) >= MAX_SAVES_PER_HOUR:
-                    decision += " (hourly limit)"
-                    save_now = False
-
-            # ------------------------------------------------
-            # Is this frame part of a training burst?
-            # ------------------------------------------------
-
-            if record_next is not None and moment >= record_next:
-                if mean_luma < RECORD_MIN_LUMA:
-                    # Too dark to be worth keeping.  Do not spend the
-                    # slot; look again shortly, so dawn is not missed by
-                    # an hour.
-                    record_next = moment + RECORD_DARK_RETRY
-
-                    if not waiting_for_light:
-                        print(f"{now:%H:%M:%S} too dark for training frames "
-                              f"(luma {mean_luma:.0f} < {RECORD_MIN_LUMA}); "
-                              f"waiting for the light")
-                        waiting_for_light = True
-                else:
-                    if waiting_for_light:
-                        print(f"{now:%H:%M:%S} light is back "
-                              f"(luma {mean_luma:.0f})")
-                        waiting_for_light = False
-
-                    record_until = moment + RECORD_LENGTH
-                    record_next = moment + RECORD_EVERY
-
-                    print(f"{now:%H:%M:%S} recording a "
-                          f"{RECORD_LENGTH:.0f} second training burst")
-
-            # If the light goes while a burst is running, stop it there
-            # rather than filling the card with black rectangles.
-            in_burst = (moment < record_until
-                        and disk_ok
-                        and mean_luma >= RECORD_MIN_LUMA)
-
-            # the little frame, every check
-            record_lores = (in_burst
-                            and moment - record_lores_last
-                            >= RECORD_LORES_INTERVAL)
-
-            # the big colour one, on a slow tick...
-            recording = (in_burst
-                         and moment - record_last >= RECORD_FULL_INTERVAL)
-
-            # ...and straight away if anything at all is stirring
-            if (in_burst
-                    and largest_area >= RECORD_MOTION_AREA
-                    and moment - record_last >= RECORD_MOTION_INTERVAL):
-                recording = True
-
-            # Copying the full-resolution frame is the expensive part, so
-            # only do it once we know the frame is being kept -- either as
-            # a wildlife photograph or as a training frame.
-            image = (request.make_array("main")
-                     if (save_now or recording) else None)
-
-        finally:
-            request.release()
-
-        # ----------------------------------------------------
-        # Update the background
-        # ----------------------------------------------------
-
-        if decision in ("lighting change", "scene change"):
-            settle_checks = SETTLE_CHECKS
-
-        if settle_checks > 0:
-            # The whole scene really did change, so relearn it quickly.
-            cv2.accumulateWeighted(gray, background, SETTLE_ALPHA)
-            settle_checks -= 1
+        metadata = request.get_metadata()
+
+        # The Y plane of the small stream is already greyscale.
+        lores = request.make_array("lores")
+        gray = cv2.GaussianBlur(lores[:MOTION_HEIGHT, :MOTION_WIDTH],
+                                (BLUR_KERNEL, BLUR_KERNEL), 0)
+
+        # --------------------------------------------------------
+        # Compare against the learned background
+        # --------------------------------------------------------
+
+        background_image = background.astype("uint8")
+
+        # Keep the SIGN: it is what separates "everything got darker
+        # together" from "some pixels went each way".
+        signed = gray.astype(np.int16) - background_image.astype(np.int16)
+
+        shift = float(np.median(signed))
+        noise = float(np.median(np.abs(signed)))
+
+        pixel_threshold = min(
+            MAX_PIXEL_THRESHOLD,
+            max(PIXEL_THRESHOLD, int(NOISE_MULTIPLIER * noise + 5)))
+
+        difference = cv2.absdiff(gray, background_image)
+        _, mask = cv2.threshold(difference, pixel_threshold, 255,
+                                cv2.THRESH_BINARY)
+
+        # Open first to rub out lone speckles, then close to join a broken-up
+        # animal into one shape.  Closing does not inflate the area the way a
+        # plain dilate does, so the blob sizes mean what they say.
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, OPEN_KERNEL)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, CLOSE_KERNEL)
+
+        changed_fraction = cv2.countNonZero(mask) / MOTION_PIXELS
+
+        # --------------------------------------------------------
+        # Find the biggest patch of connected pixels
+        # --------------------------------------------------------
+
+        count, _, stats, centroids = cv2.connectedComponentsWithStats(
+            mask, connectivity=8)
+
+        largest_area = 0
+        largest_box = None
+        largest_centroid = None
+
+        for i in range(1, count):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area > largest_area:
+                largest_area = area
+                largest_box = (int(stats[i, cv2.CC_STAT_LEFT]),
+                               int(stats[i, cv2.CC_STAT_TOP]),
+                               int(stats[i, cv2.CC_STAT_WIDTH]),
+                               int(stats[i, cv2.CC_STAT_HEIGHT]))
+                largest_centroid = (float(centroids[i][0]),
+                                    float(centroids[i][1]))
+
+        largest_fraction = largest_area / MOTION_PIXELS
+
+        if largest_box is not None:
+            _, _, box_w, box_h = largest_box
+            extent = largest_area / float(max(box_w * box_h, 1))
+            aspect = max(box_w, box_h) / float(max(min(box_w, box_h), 1))
         else:
-            # Always learn a little, everywhere, including underneath the
-            # thing that is moving.  This line is what stops a mistake
-            # from becoming permanent.
-            cv2.accumulateWeighted(gray, background, BACKGROUND_ALPHA_BUSY)
+            extent = aspect = 0.0
 
-            # Then learn again, faster, wherever nothing is moving, so
-            # the background keeps up with the light and the weather.
-            cv2.accumulateWeighted(gray, background, BACKGROUND_ALPHA,
-                                   mask=cv2.bitwise_not(mask))
+        mean_luma = float(gray.mean())
 
-        # ----------------------------------------------------
-        # Save
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # Decide.  The first rule that matches wins.
+        #
+        # Notice the AI appears only in rule 7, and only ever says yes.  It
+        # can turn a maybe into a photograph; it can never stop one.
+        # --------------------------------------------------------
 
-        if save_now:
-            if not ai_detections:
+        decision = "quiet"
+        save_now = False
+        ai_detections = []
+        confirmations = 0
+
+        big_enough = largest_area >= MIN_BLOB_AREA
+        strong = largest_area >= STRONG_BLOB_AREA
+        right_shape = aspect <= MAX_ASPECT and (strong or extent >= MIN_EXTENT)
+        motion_box = to_main_coords(largest_box) if largest_box else None
+
+        if mean_luma < MIN_MEAN_LUMA:
+            decision = "too dark"                                   # 1
+            pending = None
+
+        elif abs(shift) >= LIGHTING_SHIFT:
+            decision = "lighting change"                            # 2
+            pending = None
+
+        elif (changed_fraction >= BUSY_FRACTION
+                and largest_fraction < DOMINANT_RATIO * changed_fraction):
+            decision = "scene change"                               # 3
+            pending = None
+
+        elif not (big_enough and right_shape):                      # 4
+            if big_enough:
+                decision = "wrong shape"
+
+        elif strong:
+            decision = "strong motion"                              # 5
+            save_now = True
+
+        else:
+            confirmations = seen_again(largest_centroid, moment)
+
+            if confirmations >= CONFIRM_CHECKS:
+                decision = "confirmed motion"                       # 6
+                save_now = True
+            else:
                 ai_detections = get_ai_detections(metadata)
+                if ai_supports(ai_detections, motion_box):
+                    decision = "small blob, AI agrees"              # 7
+                    save_now = True
+                else:
+                    decision = "waiting for confirmation"           # 8
 
-            measurements = {
-                "largest_blob_area": largest_area,
-                "largest_blob_fraction": largest_fraction,
-                "changed_fraction": changed_fraction,
-                "extent": extent,
-                "aspect": aspect,
-                "blob_range": blob_range,
-                "blob_edge": blob_edge,
-                "brightness_shift": shift,
-                "pixel_threshold": pixel_threshold,
-                "confirmations": confirmations,
-                "mean_luma": mean_luma,
-                "exposure_us": exposure_us,
-                "analogue_gain": analogue_gain,
-                "box": motion_box,
-            }
+        if save_now and moment - last_save_time < SAVE_COOLDOWN:
+            decision += " (cooldown)"
+            save_now = False
 
-            filename, animal_hint = save_event(now, image, decision,
-                                               measurements, ai_detections)
+        # Copying the full-resolution frame is the expensive part, so only do
+        # it once we know we are keeping it.
+        image = request.make_array("main") if save_now else None
 
-            save_times.append(moment)
-            last_save_time = moment
+    finally:
+        request.release()
 
-            print(f"{now:%H:%M:%S} {decision}: blob={largest_area} px "
-                  f"({largest_fraction:.2%}), changed={changed_fraction:.2%} "
-                  f"-> {filename}")
+    # ------------------------------------------------------------
+    # Update the background
+    # ------------------------------------------------------------
 
-            for detection in ai_detections:
-                print(f"    AI: {detection['class']} "
-                      f"{detection['confidence']:.2f}")
+    if decision in ("lighting change", "scene change"):
+        settle_checks = SETTLE_CHECKS
 
-            if not ai_detections:
-                print("    AI: no recognised objects")
+    if settle_checks > 0:
+        cv2.accumulateWeighted(gray, background, SETTLE_ALPHA)
+        settle_checks -= 1
+    else:
+        # Always learn a little, everywhere, including underneath the thing
+        # that is moving -- that is what stops a mistake becoming permanent.
+        cv2.accumulateWeighted(gray, background, BACKGROUND_ALPHA_BUSY)
+        # Then learn again, faster, wherever nothing is moving.
+        cv2.accumulateWeighted(gray, background, BACKGROUND_ALPHA,
+                               mask=cv2.bitwise_not(mask))
 
-            last_heartbeat = moment
+    # ------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------
 
-        # ----------------------------------------------------
-        # Training burst
-        # ----------------------------------------------------
+    if save_now:
+        if not ai_detections:
+            ai_detections = get_ai_detections(metadata)
 
-        training_file = ""
+        filename = save_event(now, image, decision, {
+            "largest_blob_area": largest_area,
+            "largest_blob_fraction": largest_fraction,
+            "changed_fraction": changed_fraction,
+            "extent": extent,
+            "aspect": aspect,
+            "pixel_threshold": pixel_threshold,
+            "brightness_shift": shift,
+            "confirmations": confirmations,
+            "mean_luma": mean_luma,
+            "box": motion_box,
+        }, ai_detections)
 
-        if record_lores:
-            training_file = save_training_lores(now, raw_lores)
-            record_lores_last = moment
+        last_save_time = moment
 
-        if recording:
-            training_file = save_training_frame(now, image)
-            record_last = moment
+        print(f"{now:%H:%M:%S} {decision}: blob={largest_area} px "
+              f"({largest_fraction:.2%}) -> {filename}")
 
-        # ----------------------------------------------------
-        # Measurements, for choosing thresholds
-        # ----------------------------------------------------
+        for d in ai_detections:
+            print(f"    AI: {d['class']} {d['confidence']:.2f}")
 
-        # Every training frame is logged with what the CURRENT rules
-        # decided about it.  That gives the offline evaluation its
-        # baseline for free: this is what the camera in the woods would
-        # have done with a frame it was not allowed to filter.
-
-        if dry_run or training_file:
-            if not ai_detections and largest_area >= MIN_BLOB_AREA:
-                ai_detections = get_ai_detections(metadata)
-
-            best = max(ai_detections, key=lambda d: d["confidence"],
-                       default=None)
-
-            log_measurement(now, {
-                "time": now.isoformat(timespec="milliseconds"),
-                "file": training_file,
-                "mean_luma": round(mean_luma, 1),
-                "pixel_threshold": pixel_threshold,
-                "changed_fraction": round(changed_fraction, 5),
-                "largest_area": largest_area,
-                "largest_fraction": round(largest_fraction, 5),
-                "extent": round(extent, 3),
-                "aspect": round(aspect, 2),
-                "blob_range": round(blob_range, 1),
-                "blob_edge": round(blob_edge, 1),
-                "brightness_shift": round(shift, 1),
-                "confirmations": confirmations,
-                "exposure_us": exposure_us,
-                "analogue_gain": round(analogue_gain, 2),
-                "ai_class": best["class"] if best else "",
-                "ai_confidence": round(best["confidence"], 3) if best else "",
-                "decision": decision,
-            })
-
-            if dry_run and decision != "quiet":
-                print(f"{now:%H:%M:%S} {decision}: blob={largest_area} px "
-                      f"({largest_fraction:.2%}), "
-                      f"changed={changed_fraction:.2%}, "
-                      f"extent={extent:.2f}, aspect={aspect:.1f}, "
-                      f"shift={shift:+.0f}, "
-                      f"threshold={pixel_threshold}")
-
-                last_heartbeat = moment
-
-        # ----------------------------------------------------
-        # Prove we are still alive
-        # ----------------------------------------------------
-
-        if moment - last_heartbeat >= HEARTBEAT_INTERVAL:
-            print(f"{now:%H:%M:%S} still watching: "
-                  f"luma={mean_luma:.0f}, threshold={pixel_threshold}, "
-                  f"saves this hour={len(save_times)}")
-
-            last_heartbeat = moment
-
-        time.sleep(LOOP_DELAY)
-
-    except KeyboardInterrupt:
-        break
-
-    except Exception as error:
-        # One bad frame must never take a camera off the air for the
-        # rest of the weekend.
-        print(f"Recovered from an error: {error!r}", file=sys.stderr)
-        time.sleep(1.0)
-
-
-picam2.stop()
-
-if measurement_file is not None:
-    measurement_file.close()
-
-print("Program finished safely.")
+    time.sleep(LOOP_DELAY)
