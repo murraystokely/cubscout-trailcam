@@ -108,6 +108,32 @@ front of the camera and compare the results. The Scouts can use those
 measurements to choose a sensible motion threshold instead of treating
 the threshold as a mysterious magic number.
 
+### Step 6 --- Ask the AI Camera what it can see
+
+[`step6_ai_detect_objects.py`](step6_ai_detect_objects.py)
+
+The Raspberry Pi AI Camera has a neural network running on the sensor
+itself. This program waits until it recognises something, draws a box
+round it, and saves one picture.
+
+Concepts introduced:
+
+-   The `IMX500` device and loading a model onto the sensor
+-   Reading detections out of the frame's metadata
+-   Confidence scores, and choosing a cut-off
+-   `picam2.pre_callback` to draw on every frame before it is saved
+-   `cv2.rectangle()` and `cv2.putText()`
+
+Worth doing with the Scouts: hold up a cup, a book, a bag, a dog. The
+model knows eighty everyday objects and it is quite good at those. Then
+try it on a photograph of a deer or a raccoon and watch it guess
+something else entirely, because neither is on its list.
+
+That is not a fault in the camera, and it decides how the later steps use
+it. **A "yes" from this model is worth something; a "no" means nothing at
+all**, because most of the animals we care about were never in its
+vocabulary.
+
 ### Step 7 --- Better motion detection with the AI Camera
 
 [`step7_ai_motion_detection.py`](step7_ai_motion_detection.py)
