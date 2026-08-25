@@ -567,7 +567,13 @@ def get_ai_detections(metadata):
         if score < MIN_AI_CONFIDENCE:
             continue
 
-        name = labels[int(category)]
+        # The label list and the network's class indices come from
+        # different files.  If they ever disagree, an IndexError here would
+        # escape into the outer handler and the camera would keep running
+        # while silently never saving another photograph -- the worst way
+        # to fail.  Name the class by number instead.
+        index = int(category)
+        name = labels[index] if 0 <= index < len(labels) else f"class{index}"
 
         x, y, w, h = imx500.convert_inference_coords(box, metadata, picam2)
 
