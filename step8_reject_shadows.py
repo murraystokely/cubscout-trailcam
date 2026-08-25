@@ -1,29 +1,49 @@
 #!/usr/bin/env python3
-"""Step 8 -- the wildlife camera that actually runs in the woods.
+"""Step 8 -- telling a branch's shadow from an animal.
 
-This is [`step7_ai_motion_detection.py`](step7_ai_motion_detection.py) grown
-up.  Step 7 is the lesson: read it first, because everything here rests on
-the ideas it explains -- comparing each frame against a learned background,
-counting connected pixels rather than changed ones, and letting the sensor's
-own AI promote a doubtful blob but never veto one.
+Step 7 photographs anything that moves and is the right size.  Under a tree
+that turns out to be mostly shadow: a day on the patio gave 750 photographs,
+71 of which had a bird in them, and nine in ten of the rest were the shadow
+of a branch sliding across the concrete.
 
-What step 8 adds is the unglamorous half, the parts a camera needs to survive
-unattended for a season rather than to explain how motion detection works:
+The obvious fix is a rule about shape -- shadows come out as wide flat
+slabs.  It is also wrong, and the data cannot show you that: the only animal
+we had photographed was a crow, which is compact, so a shape rule looked
+perfect while quietly ruling out a fox with its tail out, a cougar, or a
+weasel.
 
-  * telling a branch's shadow from an animal, by texture rather than shape;
-  * training bursts, so the thresholds can be measured instead of guessed;
-  * a measurements CSV, so a day in the woods can be argued about with
-    numbers;
-  * rate limits and a disk guard, so a windy afternoon cannot fill a card;
-  * a fingerprint of its own source in every photograph, so "is this camera
-    running what I think I copied to it" has a one-line answer.
+So step 8 measures texture instead, which says nothing about shape:
 
-None of that teaches anything about finding animals in pictures.  All of it
-is why the fleet keeps working.
+    range - the spread of brightness inside the blob.  A real object has
+            light parts and dark parts.  A shadow is the SAME ground,
+            uniformly dimmed, so its spread stays small.
+    edge  - the strongest edges inside the blob.  An animal has a hard
+            silhouette against the ground.  A shadow has a soft penumbra.
+
+Measured on that day, requiring both keeps every one of the 71 crow frames
+and drops nearly three quarters of the rest.
+
+Step 8 is also where the camera stops being a lesson and starts being
+equipment, because a rule tuned by guesswork is no better than the guess.
+It records unbiased training bursts so the numbers can be measured from real
+frames, writes a measurements CSV so a day in the woods can be argued about
+with evidence, keeps rate limits and a disk guard so a windy afternoon
+cannot fill a card, and stamps a fingerprint of its own source into every
+photograph so "is this camera running what I think I copied to it" has a
+one-line answer.
+
+That last part is more than one step's worth of ideas, and would read better
+split across a step 9 and 10 than bundled here.
+
+Read [`step7_ai_motion_detection.py`](step7_ai_motion_detection.py) first.
+Everything here rests on it: a learned background rather than the previous
+frame, connected pixels rather than a count of changed ones, and the shape
+tests.  What step 7 does NOT do is notice that the thing which moved was a
+shadow.
 
 While you are choosing thresholds for your own camera site, run:
 
-    python3 -u step8_wildlife_camera.py --dry-run
+    python3 -u step8_reject_shadows.py --dry-run
 
 which saves no photographs but writes one row of measurements per check, so
 you can look at what your own patch of woods really does all day and pick

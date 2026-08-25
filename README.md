@@ -125,9 +125,9 @@ unsure about.
 
 This is the lesson, and it is meant to be read top to bottom.
 
-### Step 8 --- The camera that lives in the woods
+### Step 8 --- Telling a shadow from an animal
 
-[`step8_wildlife_camera.py`](step8_wildlife_camera.py)
+[`step8_reject_shadows.py`](step8_reject_shadows.py)
 
 Step 7 plus the unglamorous half: telling a branch's shadow from an animal,
 recording unbiased training bursts so thresholds can be measured instead of
@@ -217,7 +217,7 @@ sudo systemctl start wildlife-camera
 The service always starts `final_motion_capture.py`, but that program now
 checks what camera is actually plugged in before it does anything else.
 If it finds a Raspberry Pi AI Camera it hands straight over to
-[`step8_wildlife_camera.py`](step8_wildlife_camera.py), which uses the AI
+[`step8_reject_shadows.py`](step8_reject_shadows.py), which uses the AI
 built into the sensor to make a much better decision about what is worth
 photographing. If only [`step7_ai_motion_detection.py`](step7_ai_motion_detection.py)
 is present it uses that instead.

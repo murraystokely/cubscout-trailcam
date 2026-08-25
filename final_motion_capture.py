@@ -24,16 +24,14 @@ PHOTO_DIR="/var/www/html/photos"
 # <date>/<HHMMSS>.jpg layout, so nginx and sync_cameras.py cannot tell
 # the difference.  step8 simply adds _annotated.jpg and .json beside it.
 
-# Prefer the deployed camera; fall back to the lesson if that is all a Pi
-# has.  step8 is step7 plus the parts that keep a fleet alive unattended.
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-AI_SCRIPT = ""
-for candidate in ("step8_wildlife_camera.py", "step7_ai_motion_detection.py"):
-    path = os.path.join(HERE, candidate)
-    if os.path.exists(path):
-        AI_SCRIPT = path
-        break
+# The newest step is what an AI Camera should be running.  Bump this one
+# name when a step 9 arrives -- there is deliberately no fallback to an
+# older step, because a camera quietly running last week's rules is worse
+# than one that does not start.
+AI_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "step8_reject_shadows.py",
+)
 
 # Neither can start without this, so if the imx500 packages were never
 # installed we are better off staying here than crash-looping there.
@@ -59,7 +57,7 @@ def ai_camera_attached():
 
 
 if (ai_camera_attached()
-        and AI_SCRIPT
+        and os.path.exists(AI_SCRIPT)
         and os.path.exists(AI_MODEL)):
 
     print("AI Camera found -- handing over to "

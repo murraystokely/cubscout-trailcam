@@ -10,7 +10,7 @@ detect -> classify -> rank pipeline. This document covers a different question:
 ## The problem: a detector cannot be graded on its own photo album
 
 Every threshold in
-[`../step8_wildlife_camera.py`](../step8_wildlife_camera.py) was chosen
+[`../step8_reject_shadows.py`](../step8_reject_shadows.py) was chosen
 from geometry (how many pixels a deer covers at 30 m), from synthetic test
 frames, and from judgement. Not one of them was chosen by measuring a real
 camera in real woods. That is the honest situation today.

@@ -32,7 +32,7 @@ Run it and watch what it prints.  Wave at it, then hold still, then walk
 away, and see which rule fires each time.
 
 This is the lesson.  The program that actually lives in the woods is
-[`step8_wildlife_camera.py`](step8_wildlife_camera.py), which is this plus
+[`step8_reject_shadows.py`](step8_reject_shadows.py), which is this plus
 the unglamorous parts -- training bursts, disk guards, rate limits, shadow
 rejection -- that keep a fleet alive for a season but teach nothing about
 finding animals in pictures.
