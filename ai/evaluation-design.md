@@ -10,7 +10,7 @@ detect -> classify -> rank pipeline. This document covers a different question:
 ## The problem: a detector cannot be graded on its own photo album
 
 Every threshold in
-[`../step7_ai_motion_detection.py`](../step7_ai_motion_detection.py) was chosen
+[`../step8_reject_shadows.py`](../step8_reject_shadows.py) was chosen
 from geometry (how many pixels a deer covers at 30 m), from synthetic test
 frames, and from judgement. Not one of them was chosen by measuring a real
 camera in real woods. That is the honest situation today.
@@ -32,7 +32,7 @@ To measure misses we need frames the detector was **not allowed to filter**.
 
 ## What we collect: unbiased training bursts
 
-`step7 --record` sets a timer alongside the normal detection loop. Once an hour
+`step8 --record` sets a timer alongside the normal detection loop. Once an hour
 it records a plain run of frames with the motion rules switched off, then goes
 back to sleep. Detection keeps running the entire time --- the burst is extra
 work, not a different mode.
@@ -316,7 +316,7 @@ The most important structural decision here, and the easiest one to get wrong:
 contains its own copy of the motion rules, the two drift within a month and the
 evaluation quietly starts measuring an algorithm that is not deployed.
 
-So the motion rules move out of `step7` into a small `motion.py` holding a
+So the motion rules move out of `step8` into a small `motion.py` holding a
 single class:
 
 ```python
@@ -324,7 +324,7 @@ detector = MotionDetector(width=320, height=240)
 decision = detector.update(gray, when)     # -> "quiet" | "strong motion" | ...
 ```
 
-`step7` keeps the camera, the files and the JSON, and becomes a thin wrapper
+`step8` keeps the camera, the files and the JSON, and becomes a thin wrapper
 around that call. `replay.py` imports the very same file and feeds it JPEGs
 instead of sensor frames. Swapping in a different algorithm then means writing a
 second class with the same `update()` method --- which is also the cleanest way
@@ -391,7 +391,7 @@ pointed into moving branches, and a single fleet-wide number hides that.
    `CONFIRM_CHECKS`, `MAX_ASPECT`, `LIGHTING_SHIFT`) and plot recall against
    FP/hour.
 5. **Choose the knee** --- the point past which more recall costs a lot more
-   junk. Update the constants in `step7`, with the graph as the justification.
+   junk. Update the constants in `step8`, with the graph as the justification.
 6. **Keep collecting.** Autumn leaves fall, snow arrives, the sun moves. A
    threshold tuned in August is a hypothesis about September.
 
@@ -420,7 +420,7 @@ running in the woods right now. **Everything before this is preparation and
 everything after is refinement.**
 
 **E3 --- Sweep.** One curve per constant.
-*Done when:* the numbers in `step7` are justified by a graph instead of by
+*Done when:* the numbers in `step8` are justified by a graph instead of by
 arithmetic and good intentions.
 
 **E4 --- Rivals.** Re-run the same data through alternatives --- MOG2 background
@@ -431,12 +431,11 @@ the same axes.
 
 ---
 
-## Where the code lives, and why there is no step8
+## Where the code lives
 
-The recording lives **inside `step7`**, not in a separate script, for a hard
+The recording lives **inside `step8`**, not in a separate script, for a hard
 technical reason: only one process can hold the IMX500 camera. A separate
-`step8_collect_training_data.py` would mean stopping the `wildlife-camera`
-service to run it --- so the cameras would be blind while collecting, and the
+collector script would mean stopping the `wildlife-camera` service to run it --- so the cameras would be blind while collecting, and the
 training data would be gathered under different conditions from the deployment
 it is meant to describe. Building it in costs about forty lines: a timer, a
 filename, and one extra branch.

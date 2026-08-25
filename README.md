@@ -108,6 +108,62 @@ front of the camera and compare the results. The Scouts can use those
 measurements to choose a sensible motion threshold instead of treating
 the threshold as a mysterious magic number.
 
+### Step 6 --- Ask the AI Camera what it can see
+
+[`step6_ai_detect_objects.py`](step6_ai_detect_objects.py)
+
+The Raspberry Pi AI Camera has a neural network running on the sensor
+itself. This program waits until it recognises something, draws a box
+round it, and saves one picture.
+
+Concepts introduced:
+
+-   The `IMX500` device and loading a model onto the sensor
+-   Reading detections out of the frame's metadata
+-   Confidence scores, and choosing a cut-off
+-   `picam2.pre_callback` to draw on every frame before it is saved
+-   `cv2.rectangle()` and `cv2.putText()`
+
+Worth doing with the Scouts: hold up a cup, a book, a bag, a dog. The
+model knows eighty everyday objects and it is quite good at those. Then
+try it on a photograph of a deer or a raccoon and watch it guess
+something else entirely, because neither is on its list.
+
+That is not a fault in the camera, and it decides how the later steps use
+it. **A "yes" from this model is worth something; a "no" means nothing at
+all**, because most of the animals we care about were never in its
+vocabulary.
+
+### Step 7 --- Better motion detection with the AI Camera
+
+[`step7_ai_motion_detection.py`](step7_ai_motion_detection.py)
+
+Step 5 saved a picture whenever enough pixels changed, which works until the
+wind blows. Step 7 asks a better question: it finds the biggest *connected
+patch* of changed pixels, and compares each frame against a memory of what
+the scene usually looks like rather than against the frame before. That
+second change is what lets it photograph a deer standing still.
+
+It also uses the neural network built into the AI Camera --- but in one
+direction only. The model knows eighty everyday objects and not one of them
+is a deer, so a "no" from it means nothing; a "yes" can rescue a blob we were
+unsure about.
+
+This is the lesson, and it is meant to be read top to bottom.
+
+### Step 8 --- Telling a shadow from an animal
+
+[`step8_reject_shadows.py`](step8_reject_shadows.py)
+
+Step 7 plus the unglamorous half: telling a branch's shadow from an animal,
+recording unbiased training bursts so thresholds can be measured instead of
+guessed, a measurements CSV, rate limits and a disk guard, and a fingerprint
+of its own source in every photograph so you can tell what a camera is really
+running.
+
+None of that teaches anything about finding animals in pictures, which is
+exactly why it lives in its own file. **This is the one that gets deployed.**
+
 ### Final --- Motion-triggered wildlife camera
 
 [`final_motion_capture.py`](final_motion_capture.py)
@@ -187,9 +243,10 @@ sudo systemctl start wildlife-camera
 The service always starts `final_motion_capture.py`, but that program now
 checks what camera is actually plugged in before it does anything else.
 If it finds a Raspberry Pi AI Camera it hands straight over to
-[`step7_ai_motion_detection.py`](step7_ai_motion_detection.py), which
-uses the AI built into the sensor to make a much better decision about
-what is worth photographing.
+[`step8_reject_shadows.py`](step8_reject_shadows.py), which uses the AI
+built into the sensor to make a much better decision about what is worth
+photographing. If only [`step7_ai_motion_detection.py`](step7_ai_motion_detection.py)
+is present it uses that instead.
 
 So upgrading a camera is: swap the hardware, reboot, done. There is no
 service file to edit, and a Pi still on the older camera module carries
