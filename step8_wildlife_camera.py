@@ -406,8 +406,14 @@ MIN_AI_HINT_CONFIDENCE = 0.45     # worth flagging as probably an animal
 # The AI recognises the furniture too.  A bench, a chair, a fence post is
 # detected in every single frame, and its box is huge -- so a stray blob
 # of noise that happens to land inside it would be "confirmed" by an
-# object that has not moved all day.  To count as support, the AI's box
-# has to be roughly the size of the thing that actually moved.
+# object that has not moved all day.  Requiring the AI's box to be roughly
+# the size of the thing that moved stops the very worst of that.
+#
+# It is weaker than it looks, and the day's data says so: among detections
+# that overlap the motion box, "bird" has a median size ratio of 1.2 and the
+# furniture 1.4.  Indistinguishable by size.  So this catches only the
+# extreme case -- a tiny blob inside a frame-filling box -- and nothing that
+# depends on telling an animal from a bench may lean on it.
 MAX_AI_BOX_RATIO = 20
 
 # COCO has no deer, raccoon, squirrel or coyote, so a real animal here
@@ -591,6 +597,40 @@ def blob_texture(raw_gray, box):
     gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
 
     return float(high - low), float(np.percentile(np.hypot(gx, gy), 99))
+
+
+def ai_sees_animal(detections, motion_box):
+    """Stricter than ai_supports: the AI must name something ALIVE.
+
+    Used only to rescue a blob the texture test called a shadow.  Plain
+    ai_supports is no good there, because it accepts any class -- and this
+    camera detects the bench in every frame with a box overlapping most of
+    the patio, so a big shadow would rescue itself.  Measured: with a
+    frame-filling furniture box, ai_supports rescued 10 of 51 shadow frames.
+
+    Requiring an animal class costs little.  Not one of the 71 crow frames
+    failed the texture test to begin with, so this path exists for an animal
+    we have not met yet -- something pale, in flat light, that the model
+    nonetheless recognises.
+    """
+    _, _, motion_w, motion_h = motion_box
+    motion_area = max(motion_w * motion_h, 1)
+
+    for detection in detections:
+        if detection["class"] not in ANIMAL_CLASSES:
+            continue
+        if detection["confidence"] < MIN_AI_RESCUE_CONFIDENCE:
+            continue
+
+        _, _, w, h = detection["box"]
+
+        if w * h > MAX_AI_BOX_RATIO * motion_area:
+            continue
+
+        if boxes_overlap(detection["box"], motion_box):
+            return True
+
+    return False
 
 
 def to_main_coords(box):
@@ -1123,8 +1163,8 @@ while True:
                 # creeps steadily and confirms itself perfectly.
                 ai_detections = get_ai_detections(metadata)
 
-                if motion_box and ai_supports(ai_detections, motion_box):
-                    decision = "shadow-like, AI agrees"
+                if motion_box and ai_sees_animal(ai_detections, motion_box):
+                    decision = "shadow-like, but the AI names an animal"
                     save_now = True
                 else:
                     decision = "shadow"
