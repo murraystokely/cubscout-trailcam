@@ -294,9 +294,22 @@ LIGHTING_SHIFT = 10
 # 144 and edges above 500, while the median shadow managed 103 and 107.
 # The thresholds sit well below the bird and well above the shadow.
 #
-# A blob that fails these is not thrown away outright -- the AI can still
-# rescue it -- because a pale animal in flat light could plausibly fail
-# both, and the training bursts record it regardless either way.
+# A blob that fails these is thrown away, and rule 5 clears `pending`
+# too, so a frame judged a shadow also resets the confirmation count of
+# whatever was standing there.  A pale animal in flat light could
+# plausibly fail both tests, and this is the only rule in the program
+# that can discard an animal in silence.
+#
+# So it is the only rule the AI is allowed to overrule.  If the model
+# recognises a LIVE ANIMAL where the blob is -- a whitelisted class, see
+# ai_promotes() -- the picture is taken anyway.  That is a thin net: on
+# 25 August it agreed with 4 of 31 crow frames.  But it caught none of
+# the 240 false positives that day either, so it costs nothing to hang.
+#
+# Two other things keep the miss measurable rather than invisible: the
+# training bursts record every frame with the rules switched off, and a
+# rejection that came close to passing is written to the measurements
+# CSV whatever time of day it happens (see LOG_NEAR_MISS).
 SHADOW_MIN_RANGE = 110
 SHADOW_MIN_EDGE = 250
 
@@ -450,10 +463,58 @@ SAVE_ANNOTATED = True
 # AI settings
 # ------------------------------------------------------------
 
-# The AI never decides whether we save, so these are only ever used to
-# add evidence, not to take it away.
+# The AI may only ever say YES.  It can turn a blob we were going to
+# throw away into a photograph; it can never stop one.
 MIN_AI_CONFIDENCE = 0.25          # worth writing into the JSON
-MIN_AI_HINT_CONFIDENCE = 0.45     # worth flagging as probably an animal
+MIN_AI_HINT_CONFIDENCE = 0.40     # worth flagging as probably an animal
+
+# ...and it may only say yes about a LIVE ANIMAL.  This is a whitelist,
+# and the whitelist is the whole design: an earlier version asked only
+# "does the model agree an object is there", which the bench answered
+# yes to in every frame of every day, and the two saves it ever won us
+# were both the bench vouching for a blob of noise.  Nothing that is not
+# in ANIMAL_CLASSES gets a vote now, so the furniture cannot vote at all.
+#
+# Measured on 25 August 2026: nine animal-class detections in 271
+# photographs, all nine on frames with a real crow in them, none on any
+# of the 240 false positives.  It agreed with only 4 of the 31 crow
+# frames, so it is a safety net and not a detector -- but a net with
+# nothing false in it is worth hanging under the shadow rule.
+MIN_AI_PROMOTE_CONFIDENCE = 0.40
+
+
+# ------------------------------------------------------------
+# Watching the shadow rule from outside the training bursts
+# ------------------------------------------------------------
+
+# A rejection we cannot see is a rejection we cannot argue with.  The
+# measurements CSV is written only for training-burst frames, and a
+# burst is 30 seconds in every hour -- under 1% of the day -- so better
+# than ninety-nine times in a hundred, when the shadow rule throws
+# something away, no record of it survives.
+#
+# That is exactly the wrong blind spot to have over the one rule that
+# can discard an animal in silence.  So a blob that was rejected as a
+# shadow but came CLOSE to passing gets a row of its own, whatever time
+# of day it is.  These rows have an empty `file` column, which is what
+# tells them apart from burst rows.
+#
+# Not every rejection: a shadow that fails by a mile teaches nothing,
+# and there are thousands of those.  Only the near misses.
+LOG_NEAR_MISS = True
+NEAR_MISS_EDGE = 150              # cf. SHADOW_MIN_EDGE = 250
+NEAR_MISS_RANGE = 80              # cf. SHADOW_MIN_RANGE = 110
+
+# ...and a cap, because the estimate above came from one day in which a
+# sunlit bench dominated the sample, and a windy morning could plausibly
+# be an order of magnitude worse.  Roughly a megabyte a day at this rate,
+# against six hundred of photographs.
+MAX_NEAR_MISS_PER_HOUR = 400
+
+# The AI recognises the furniture too, and a bench box covers a sixth of
+# the scene.  Even a whitelisted class has to be about the size of what
+# actually moved before it counts as agreement.
+MAX_AI_BOX_RATIO = 20
 
 # COCO has no deer, raccoon, squirrel, fox or coyote, so a real animal here
 # usually lands on the nearest thing the model does happen to know.
@@ -631,6 +692,52 @@ def blob_texture(raw_gray, box):
     gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
 
     return float(high - low), float(np.percentile(np.hypot(gx, gy), 99))
+
+
+def boxes_overlap(first, second):
+    ax, ay, aw, ah = first
+    bx, by, bw, bh = second
+    return (ax < bx + bw and bx < ax + aw
+            and ay < by + bh and by < ay + ah)
+
+
+def ai_promotes(detections, motion_box):
+    """True if the AI recognises a live animal where the motion is.
+
+    Three things have to hold together, and the first is the one that
+    matters: the class must be on the ANIMAL_CLASSES whitelist.  A crow
+    comes back as "bird" on a good day and as "cat" or "dog" on a bad
+    one, and all three are on the list; "bench" and "chair" never will
+    be, whatever they score.
+
+    The other two are sanity: it has to be sure enough, and its box has
+    to be roughly the size of the thing that moved rather than a piece
+    of furniture that happens to contain it.
+
+    Both boxes are in full-resolution photograph pixels.
+    """
+    if motion_box is None:
+        return False
+
+    _, _, motion_w, motion_h = motion_box
+    motion_area = max(motion_w * motion_h, 1)
+
+    for detection in detections:
+        if detection["class"] not in ANIMAL_CLASSES:
+            continue
+
+        if detection["confidence"] < MIN_AI_PROMOTE_CONFIDENCE:
+            continue
+
+        _, _, w, h = detection["box"]
+
+        if w * h > MAX_AI_BOX_RATIO * motion_area:
+            continue
+
+        if boxes_overlap(detection["box"], motion_box):
+            return True
+
+    return False
 
 
 def to_main_coords(box):
@@ -922,6 +1029,7 @@ waiting_for_light = False
 
 last_save_time = 0.0
 save_times = []
+near_miss_times = []
 
 disk_ok = True
 last_disk_check = 0.0
@@ -1093,11 +1201,14 @@ while True:
             #   3. the whole treeline is moving  -> skip
             #   4. too small, or the wrong shape -> skip
             #   5. flat inside, soft edges       -> skip (a shadow)
+            #      ...unless the AI sees an animal -> SAVE
             #   6. a big blob                    -> SAVE
             #   7. a small blob, seen twice      -> SAVE
-            #   8. anything else                 -> wait and see
+            #   8. a small blob the AI vouches for -> SAVE
+            #   9. anything else                 -> wait and see
             #
-            # The AI does not appear here at all, and that is deliberate.
+            # The AI appears twice, in rules 5 and 8, and in both it may
+            # only ever say YES.
             # Over two days it decided 2 saves out of 1069, and both were
             # the bench "confirming" a blob of noise that had not moved.
             # It knows eighty everyday objects; fox, raccoon, deer, coyote
@@ -1162,8 +1273,18 @@ while True:
                 # looks like this at any size and any shape, and persistence
                 # cannot help -- a shadow creeps steadily and confirms
                 # itself perfectly.
-                decision = "shadow"
-                pending = None
+                #
+                # This is the one rule that can throw away an animal in
+                # silence -- a pale animal in flat light fails both tests
+                # -- so it is the one rule the AI is allowed to overrule.
+                ai_detections = get_ai_detections(metadata)
+
+                if ai_promotes(ai_detections, motion_box):
+                    decision = "shadow, but the AI sees an animal"
+                    save_now = True
+                else:
+                    decision = "shadow"
+                    pending = None
 
             elif strong:
                 # 6. Big, with real structure in it.  Take the picture.
@@ -1182,10 +1303,21 @@ while True:
                     save_now = True
 
                 else:
-                    # 8. Wait and see.  A quarter of a second from now this
-                    # blob either is still there or it is not, and that
-                    # answers the question better than anything else can.
-                    decision = "waiting for confirmation"
+                    ai_detections = get_ai_detections(metadata)
+
+                    if ai_promotes(ai_detections, motion_box):
+                        # 8. Too soon to confirm, but the AI recognises a
+                        # live animal right where the blob is.  A leaf
+                        # never gets this vote.
+                        decision = "small blob, the AI sees an animal"
+                        save_now = True
+
+                    else:
+                        # 9. Wait and see.  A quarter of a second from
+                        # now this blob either is still there or it is
+                        # not, and that answers the question better than
+                        # anything else can.
+                        decision = "waiting for confirmation"
 
             # ------------------------------------------------
             # Rate limits
@@ -1354,7 +1486,23 @@ while True:
         # baseline for free: this is what the camera in the woods would
         # have done with a frame it was not allowed to filter.
 
-        if dry_run or training_file:
+        near_miss = (LOG_NEAR_MISS
+                     and not training_file
+                     and not dry_run
+                     and decision == "shadow"
+                     and (blob_edge >= NEAR_MISS_EDGE
+                          or blob_range >= NEAR_MISS_RANGE))
+
+        if near_miss:
+            near_miss_times = [t for t in near_miss_times
+                               if moment - t < 3600.0]
+
+            if len(near_miss_times) >= MAX_NEAR_MISS_PER_HOUR:
+                near_miss = False
+            else:
+                near_miss_times.append(moment)
+
+        if dry_run or training_file or near_miss:
             if not ai_detections and largest_area >= MIN_BLOB_AREA:
                 ai_detections = get_ai_detections(metadata)
 
