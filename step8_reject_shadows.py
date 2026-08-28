@@ -99,6 +99,28 @@ def code_fingerprint():
 CODE_VERSION = code_fingerprint()
 
 
+def board_model():
+    """Which Raspberry Pi is this?  Empty string if we cannot tell."""
+    try:
+        with open("/proc/device-tree/model") as handle:
+            return handle.read().rstrip("\0").strip()
+    except OSError:
+        return ""
+
+
+BOARD = board_model()
+
+# The Pi Zero 2 W has 512 MB against a Pi 5's several gigabytes, and after
+# the GPU split the ARM sees about 415 MB of it.  Measured on
+# wildlifecam10: two thirds of this program was swapped out to the SD
+# card and every numpy operation became a disk read.
+#
+# So on that board we keep smaller photographs and fewer of them in
+# flight.  Between them those two settings are worth about 27 MB, which
+# is the difference between running in memory and running from swap.
+SMALL_BOARD = "Zero 2" in BOARD
+
+
 # ------------------------------------------------------------
 # Camera streams
 # ------------------------------------------------------------
@@ -106,7 +128,16 @@ CODE_VERSION = code_fingerprint()
 # "main" is the photograph we keep.  4:3 uses the whole sensor.  Asking
 # for a 16:9 size throws away the top and bottom of the view, which is
 # the last thing a trail camera wants.
-MAIN_SIZE = (2028, 1520)
+# Neither of these two touches a motion threshold, which is why they are
+# safe to change per board: nothing in the decision chain ever reads the
+# "main" stream.  It is only the photograph we keep.
+#
+# LORES_SIZE deliberately does NOT change.  SHADOW_MIN_RANGE is measured
+# in grey levels and SHADOW_MIN_EDGE in grey levels per pixel, and
+# neither is scaled by MOTION_SCALE -- so moving the motion resolution
+# would silently change what the shadow rule does on a board we have
+# never measured.
+MAIN_SIZE = (1520, 1140) if SMALL_BOARD else (2028, 1520)
 
 # Picamera2 format names describe the byte order in memory, which is the
 # REVERSE of the numpy channel order.  "RGB888" therefore hands OpenCV
@@ -151,8 +182,9 @@ MOTION_PIXELS = MOTION_WIDTH * MOTION_HEIGHT
 
 JPEG_QUALITY = 88
 
-# Each full-resolution buffer is about 9 MB, so keep only a few.
-BUFFER_COUNT = 4
+# Each full-resolution buffer is about 9 MB, so keep only a few -- and
+# on a small board, fewer still.
+BUFFER_COUNT = 2 if SMALL_BOARD else 4
 
 
 # ------------------------------------------------------------
@@ -1035,8 +1067,9 @@ disk_ok = True
 last_disk_check = 0.0
 last_heartbeat = time.time()
 
-print(f"step8 code {CODE_VERSION}, photographs {MAIN_SIZE[0]}x{MAIN_SIZE[1]} "
-      f"into {photo_dir}")
+print(f"step8 code {CODE_VERSION} on {BOARD or 'an unrecognised board'}")
+print(f"  photographs {MAIN_SIZE[0]}x{MAIN_SIZE[1]}, {BUFFER_COUNT} buffers"
+      f"{'  (small-board settings)' if SMALL_BOARD else ''} into {photo_dir}")
 print(f"Watching for wildlife on {CAMERA_NAME}"
       f"{' (dry run: saving nothing)' if dry_run else ''}...")
 print(f"  blob >= {MIN_BLOB_AREA} px needs confirming, "
