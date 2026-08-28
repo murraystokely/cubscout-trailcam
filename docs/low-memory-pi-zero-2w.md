@@ -287,6 +287,141 @@ about making the program smaller, only about making it fit.
 
 ---
 
+## Optional: WiFi powersave, and battery deployments
+
+**None of this is applied.** It is recorded because the question came up
+while debugging a camera that ran fine outdoors but could not be reached,
+and the answer took some finding.
+
+### The problem powersave causes
+
+A camera left outside ran for 3 h 21 m without a crash and never joined
+the network. The kernel log showed:
+
+```
+brcmf_cfg80211_set_power_mgmt: power save enabled
+```
+
+and wpa_supplicant tried its home SSID twelve times in ninety seconds:
+
+```
+wlan0: Trying to associate with 80:80:2c:f2:3d:e1 (SSID='Stokely')
+wlan0: CTRL-EVENT-ASSOC-REJECT bssid=00:00:00:00:00:00 status_code=16
+```
+
+**`status_code=16`** is 802.11 for *"authentication rejected because of
+timeout waiting for next frame"* — the association frames are not
+completing the round trip. On a marginal link, WiFi powersave makes this
+much worse: the radio naps between beacons and misses the AP's reply.
+
+A related trap when reading these logs: after falling through to a second
+SSID, wpa_supplicant reported
+
+```
+WPA: 4-Way Handshake failed - pre-shared key may be incorrect
+CTRL-EVENT-SSID-TEMP-DISABLED ssid="..." reason=WRONG_KEY
+```
+
+**That message is not evidence of a wrong password.** wpa_supplicant emits
+it whenever the handshake fails for any reason. Look at the line above it:
+if it says `Authentication ... timed out` and the disconnect is
+`locally_generated=1`, the station gave up — that is a weak link, not a
+bad key. A genuinely wrong key gets you deauthenticated by the AP instead.
+
+### Turning powersave off
+
+Simplest, and right for any mains-powered camera:
+
+```bash
+sudo tee /etc/NetworkManager/conf.d/99-headless-wifi.conf >/dev/null <<'EOF'
+[connection]
+wifi.powersave=2
+EOF
+sudo systemctl reload NetworkManager
+```
+
+`2` is disable. Check it took with `iw dev wlan0 get power_save`
+(`sudo apt install iw` — it is not installed by default).
+
+Do **not** also raise `connection.autoconnect-retries` to `0`. It is
+tempting, but the manual is explicit that the retry count is what makes
+NetworkManager move on:
+
+> the number of times a connection activation should be automatically
+> tried **before switching to another one**
+
+Set it to zero and it will hammer the first profile forever and never try
+the camping SSIDs. The default of 4 is correct, and NetworkManager
+re-arms autoconnect after a timeout, so it never permanently gives up.
+
+### Is it worth it on battery?
+
+The Pi **cannot tell mains from a battery**. There are no
+`/sys/class/power_supply/` devices, and `vcgencmd pmic_read_adc` answers
+`Command not registered` on a Zero 2 W — that is a Pi 5 feature. A USB
+power bank and a mains PSU are indistinguishable to it. So this has to be
+a deployment-time decision, not something detected.
+
+Rough figures for a Zero 2 W running step8 with an IMX500:
+
+| | draw |
+| --- | ---: |
+| Pi + camera + processing | ~400–600 mA |
+| WiFi active receive | ~50–60 mA |
+| powersave saves | **~35 mA** |
+
+Six to eight per cent of total, bought at the cost of the association
+failures above. These are estimates from typical figures, not measured on
+this hardware.
+
+**On a battery in a field there is usually no access point in range
+anyway**, so the better trade is to switch the radio off entirely — twice
+the saving, and no connectivity lost because there was none:
+
+```bash
+nmcli radio wifi off
+```
+
+### If you do want it conditional
+
+Put the marker on the boot partition, which is FAT32 — so it can be
+flipped by plugging the SD card into any laptop, without booting the Pi.
+
+```bash
+sudo apt install -y iw
+
+sudo tee /etc/NetworkManager/dispatcher.d/50-wifi-powersave >/dev/null <<'EOF'
+#!/bin/sh
+# Powersave costs us associations on a marginal link, so it is off by
+# default.  Create /boot/firmware/battery-powered to turn it back on for
+# a deployment where runtime matters more than being reachable.
+[ "$1" = "wlan0" ] || exit 0
+[ "$2" = "up" ] || exit 0
+if [ -f /boot/firmware/battery-powered ]; then
+    iw dev wlan0 set power_save on
+else
+    iw dev wlan0 set power_save off
+fi
+EOF
+sudo chmod +x /etc/NetworkManager/dispatcher.d/50-wifi-powersave
+```
+
+Use this **or** the `conf.d` file above, not both — they would fight over
+the same property.
+
+### What is not worth changing
+
+The access points were checked and were not the problem. On a pair of
+FortiAP 231Fs the 2.4 GHz radio was already at `power-level 100`,
+`channel-bonding 20MHz`, `band` including `802.11g` so legacy rates were
+available, and with none of `probe-resp-suppression`,
+`radio-sensitivity` or any minimum-RSSI floor enabled. There was nothing
+turning the camera away.
+
+Worth remembering when this happens: the camera **keeps working**. It ran
+for over three hours with no network and photographed the whole time. The
+pictures are on the card.
+
 ## Quick reference
 
 Paste this into a terminal on the Pi for a one-screen health check:
