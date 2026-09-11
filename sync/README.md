@@ -9,6 +9,10 @@ This is the last item on the "possible next steps" list in the main
 [README](../README.md): automatically copy photographs to a laptop when
 returning to camp.
 
+If Wi-Fi is too slow --- and after a busy day it usually is --- take the card
+out of the camera instead and use
+[`sync_sdcard.py`](sync_sdcard.py); see [below](#copying-from-the-sd-card).
+
 ## Quick start
 
 ```bash
@@ -117,6 +121,66 @@ ben     wildlifecam2.local
 
 Run `./sync_cameras.py --help` for the full list.
 
+## Copying from the SD card
+
+Wi-Fi moves a day of photographs in something like an hour. A card reader
+moves the same photographs in seconds. When you are back from a campout with
+several cameras' worth to copy, that is the difference between an evening and
+a coffee.
+
+Power the camera down, take its SD card out, and put it in the laptop's card
+reader. The desktop mounts it by itself --- a Raspberry Pi card has two
+partitions, and the one with the photographs is the big Linux one, usually
+called `rootfs`. Then:
+
+```bash
+cd sync
+./sync_sdcard.py --list      # which card is in the reader?
+./sync_sdcard.py             # copy everything off it
+```
+
+The photographs land in exactly the same place `sync_cameras.py` would have
+put them, so the two programs can be mixed freely: Wi-Fi during the week, the
+card reader after a campout. Which camera a card belongs to is read from
+`/etc/hostname` on the card itself, and `cameras.conf` renames it to the
+Scout's name just as it does over Wi-Fi.
+
+### Emptying the card
+
+A card that is nearly full stops the camera taking photographs. `--wipe`
+empties it once the photographs are safely on the laptop:
+
+```bash
+./sync_sdcard.py --wipe                 # copy, check, then empty the card
+./sync_sdcard.py --wipe --checksum      # ...reading every byte first
+```
+
+Nothing is deleted until it has been copied *and* checked against the copy on
+the laptop, and only files inside the photos directory are ever touched --- the
+camera program, its settings and the rest of the Pi are left alone. If even one
+photograph does not check out, nothing at all is deleted and the program says
+which one. `--checksum` compares every byte instead of just the file size; it
+is slower, and worth it before wiping a card you cannot re-photograph.
+
+You will be asked to type `wipe` before anything is deleted. `--yes` skips the
+question.
+
+### Useful options
+
+| Option | What it does |
+| --- | --- |
+| `CARD` | Where the card is mounted, if it was not found by itself. |
+| `--list` | Show the cards that were found; copy nothing. |
+| `--dest DIR` | Where to put the photos (default `~/wildlifecam-photos`). |
+| `--name NAME` | File this card under a name of your choosing. |
+| `--dry-run` | Show what would be copied without copying it. |
+| `--wipe` | Empty the card once the photographs are copied and checked. |
+| `--checksum` | Check the copies byte by byte before wiping. |
+| `--yes` | Do not ask before wiping. |
+| `--verbose` | List every file as it is copied. |
+
+Run `./sync_sdcard.py --help` for the full list.
+
 ## Troubleshooting
 
 **"No wildlife cameras found."**
@@ -160,4 +224,15 @@ The photo directory on the Pi must be readable by the ssh user. The default
 **The copy is slow.**
 That is normal on Wi-Fi with a lot of new photographs. `rsync` resumes
 partly-copied files, so interrupting it with Ctrl-C and running it again
-later does not start over.
+later does not start over. If it is slow enough to be a nuisance, copy from
+the SD card instead --- see [above](#copying-from-the-sd-card).
+
+**`sync_sdcard.py` says "no camera cards found".**
+Wait for the desktop to finish mounting the card; `--list` will then show it.
+If the desktop does not mount cards by itself, or you are on a machine where
+it does not, pass the mount point: `./sync_sdcard.py /media/you/rootfs`. A
+card has two partitions, and the small `bootfs` one has no photographs on it.
+
+**`sync_sdcard.py --wipe` could not delete the photographs.**
+The card is mounted read-only. Eject it, mount it read-write, and run the
+program again. The photographs are already copied, so nothing is lost.
