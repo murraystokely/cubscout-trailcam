@@ -1,0 +1,9 @@
+# Downloaded model weights (~280 MB for MDv5a) and everything derived from
+# the photographs: the manifest, crops, exports.  All reproducible from the
+# photo library plus `python3 -m trailcam scan && ... detect`.
+ai/models/
+ai/data/
+ai/.venv/
+
+__pycache__/
+*.pyc
