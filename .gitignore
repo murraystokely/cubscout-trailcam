@@ -7,3 +7,8 @@ ai/.venv/
 
 __pycache__/
 *.pyc
+
+# The benchmark corpus: 118 MB of frames, rebuildable with `bench build`
+# from the seed recorded in its own corpus.json.  The RESULTS are committed
+# (ai/results/benchmarks/*.json) -- they are findings, and they are small.
+ai/data/bench/

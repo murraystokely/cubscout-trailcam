@@ -233,6 +233,27 @@ Writes MegaDetector's own JSON format, which
 camera-trap review application --- ingests directly. Worth knowing about
 before writing any labelling UI of our own.
 
+## Benchmarking a machine
+
+The archive grows by roughly 300 frames a day per camera, and a pass takes
+four hours on this laptop. Which machine should be doing that --- and does
+moving it somewhere else change the answers?
+
+```bash
+.venv/bin/python -m trailcam bench build           # a fixed 250-frame corpus
+.venv/bin/python -m trailcam bench run --device cpu
+.venv/bin/python -m trailcam bench report          # every machine, in a table
+```
+
+It measures the pass we actually run (decode, letterbox, forward, NMS, one
+image at a time), verifies the corpus by sha256 before timing anything,
+discards a warmup, repeats until the machine has had time to get hot, and
+records what the model *found* as well as how long it took --- so two
+machines can be compared on agreement, not just on seconds.
+
+[`results/benchmarks/`](results/benchmarks/) has the results, the rules,
+and what to install on a Mac or a CUDA box.
+
 ## Results
 
 Measured findings go in [`results/`](results/), one file per analysis, named
