@@ -1,0 +1,850 @@
+{
+ "recorded_at": "2026-09-13T06:55:18+00:00",
+ "corpus": {
+  "id": "dc1aa80c0519897b",
+  "frames": 250,
+  "bytes": 118143507
+ },
+ "mode": {
+  "name": "single",
+  "batch_size": 1,
+  "n_cores": 1,
+  "loader_workers": 0
+ },
+ "model": {
+  "name": "MDV5A",
+  "weights": "md_v5a.0.1.pt",
+  "device": "cpu"
+ },
+ "machine": {
+  "host": "thinkpad",
+  "system": "Linux",
+  "release": "6.17.0-1032-oem",
+  "machine": "x86_64",
+  "processor": "Intel(R) Core(TM) Ultra 7 258V",
+  "cpu_count": 8,
+  "memory_gb": 33.1,
+  "python": "3.12.3",
+  "on_battery": true,
+  "threads": 7,
+  "torch": "2.14.0+cpu",
+  "cuda_available": false,
+  "mps_available": false,
+  "megadetector": "10.0.25"
+ },
+ "note": "on battery, lid open, no other load",
+ "timing": {
+  "model_load_seconds": 3.43,
+  "passes": [
+   650.331
+  ],
+  "frames_measured": 250,
+  "seconds_per_frame": 2.5859,
+  "frames_per_second": 0.39,
+  "p50_seconds": 2.5861,
+  "p90_seconds": 2.777,
+  "decode_seconds_median": 0.0099,
+  "inference_seconds_median": 2.5713,
+  "throttle_ratio": null
+ },
+ "findings": {
+  "wildlifecam10__2026-08-27__train_224930_301.jpg": [
+   {
+    "category": "3",
+    "conf": 0.129
+   },
+   {
+    "category": "3",
+    "conf": 0.338
+   },
+   {
+    "category": "2",
+    "conf": 0.802
+   }
+  ],
+  "wildlifecam10__2026-08-27__train_224932_870.jpg": [
+   {
+    "category": "3",
+    "conf": 0.1
+   },
+   {
+    "category": "3",
+    "conf": 0.101
+   },
+   {
+    "category": "2",
+    "conf": 0.846
+   }
+  ],
+  "wildlifecam10__2026-08-27__train_224934_056.jpg": [
+   {
+    "category": "2",
+    "conf": 0.842
+   }
+  ],
+  "wildlifecam10__2026-08-27__train_224935_380.jpg": [
+   {
+    "category": "2",
+    "conf": 0.871
+   }
+  ],
+  "wildlifecam10__2026-08-27__train_224944_274.jpg": [
+   {
+    "category": "3",
+    "conf": 0.15
+   },
+   {
+    "category": "2",
+    "conf": 0.914
+   }
+  ],
+  "wildlifecam10__2026-08-28__train_083121_237.jpg": [
+   {
+    "category": "2",
+    "conf": 0.105
+   }
+  ],
+  "wildlifecam10__2026-08-28__train_173114_546.jpg": [],
+  "wildlifecam10__2026-08-29__train_083116_330.jpg": [],
+  "wildlifecam10__2026-08-29__train_083121_430.jpg": [],
+  "wildlifecam10__2026-08-29__train_083138_891.jpg": [],
+  "wildlifecam10__2026-08-29__train_093122_875.jpg": [],
+  "wildlifecam10__2026-08-29__train_113133_364.jpg": [],
+  "wildlifecam10__2026-08-29__train_123137_641.jpg": [],
+  "wildlifecam10__2026-08-29__train_133133_857.jpg": [],
+  "wildlifecam10__2026-08-30__train_062122_575.jpg": [],
+  "wildlifecam10__2026-08-30__train_062132_854.jpg": [],
+  "wildlifecam10__2026-08-30__train_082133_059.jpg": [],
+  "wildlifecam10__2026-08-30__train_092144_967.jpg": [],
+  "wildlifecam10__2026-08-30__train_112147_442.jpg": [],
+  "wildlifecam10__2026-08-30__train_132136_964.jpg": [],
+  "wildlifecam10__2026-08-30__train_162134_447.jpg": [],
+  "wildlifecam10__2026-08-31__train_083134_143.jpg": [],
+  "wildlifecam10__2026-08-31__train_103154_963.jpg": [],
+  "wildlifecam10__2026-08-31__train_153134_823.jpg": [],
+  "wildlifecam10__2026-09-01__train_093146_463.jpg": [],
+  "wildlifecam10__2026-09-01__train_093208_318.jpg": [],
+  "wildlifecam10__2026-09-01__train_113150_079.jpg": [],
+  "wildlifecam10__2026-09-01__train_113151_197.jpg": [],
+  "wildlifecam10__2026-09-01__train_143214_394.jpg": [],
+  "wildlifecam10__2026-09-01__train_173212_022.jpg": [],
+  "wildlifecam10__2026-09-02__train_143207_706.jpg": [],
+  "wildlifecam10__2026-09-02__train_163208_026.jpg": [],
+  "wildlifecam10__2026-09-03__train_093226_903.jpg": [],
+  "wildlifecam10__2026-09-03__train_113213_722.jpg": [],
+  "wildlifecam10__2026-09-05__train_103230_013.jpg": [
+   {
+    "category": "1",
+    "conf": 0.954
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103231_168.jpg": [
+   {
+    "category": "1",
+    "conf": 0.944
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103232_476.jpg": [
+   {
+    "category": "1",
+    "conf": 0.919
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103233_628.jpg": [
+   {
+    "category": "1",
+    "conf": 0.929
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103234_948.jpg": [
+   {
+    "category": "1",
+    "conf": 0.916
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103236_251.jpg": [
+   {
+    "category": "1",
+    "conf": 0.943
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103237_392.jpg": [
+   {
+    "category": "1",
+    "conf": 0.899
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103238_698.jpg": [
+   {
+    "category": "1",
+    "conf": 0.894
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103239_870.jpg": [
+   {
+    "category": "1",
+    "conf": 0.921
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103241_169.jpg": [
+   {
+    "category": "1",
+    "conf": 0.935
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103242_476.jpg": [
+   {
+    "category": "1",
+    "conf": 0.94
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103243_616.jpg": [
+   {
+    "category": "1",
+    "conf": 0.944
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103244_946.jpg": [
+   {
+    "category": "1",
+    "conf": 0.915
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103246_095.jpg": [
+   {
+    "category": "1",
+    "conf": 0.919
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103247_398.jpg": [
+   {
+    "category": "1",
+    "conf": 0.92
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103248_704.jpg": [
+   {
+    "category": "1",
+    "conf": 0.929
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103249_850.jpg": [
+   {
+    "category": "1",
+    "conf": 0.918
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103250_976.jpg": [
+   {
+    "category": "1",
+    "conf": 0.844
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103252_108.jpg": [
+   {
+    "category": "1",
+    "conf": 0.844
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103253_230.jpg": [
+   {
+    "category": "1",
+    "conf": 0.837
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103254_356.jpg": [
+   {
+    "category": "1",
+    "conf": 0.829
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103255_510.jpg": [
+   {
+    "category": "1",
+    "conf": 0.828
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103256_633.jpg": [
+   {
+    "category": "1",
+    "conf": 0.824
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103257_760.jpg": [
+   {
+    "category": "1",
+    "conf": 0.828
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_103258_889.jpg": [
+   {
+    "category": "1",
+    "conf": 0.811
+   }
+  ],
+  "wildlifecam10__2026-09-05__train_133232_795.jpg": [],
+  "wildlifecam10__2026-09-05__train_153251_003.jpg": [],
+  "wildlifecam10__2026-09-06__train_063240_137.jpg": [],
+  "wildlifecam10__2026-09-06__train_083243_740.jpg": [],
+  "wildlifecam10__2026-09-06__train_083244_860.jpg": [],
+  "wildlifecam10__2026-09-06__train_123251_241.jpg": [],
+  "wildlifecam10__2026-09-06__train_123301_484.jpg": [],
+  "wildlifecam10__2026-09-06__train_153241_511.jpg": [
+   {
+    "category": "2",
+    "conf": 0.884
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153242_832.jpg": [
+   {
+    "category": "2",
+    "conf": 0.907
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153243_979.jpg": [
+   {
+    "category": "2",
+    "conf": 0.906
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153245_300.jpg": [
+   {
+    "category": "2",
+    "conf": 0.876
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153246_482.jpg": [
+   {
+    "category": "2",
+    "conf": 0.931
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153247_781.jpg": [
+   {
+    "category": "2",
+    "conf": 0.95
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153249_093.jpg": [
+   {
+    "category": "2",
+    "conf": 0.944
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153250_244.jpg": [
+   {
+    "category": "2",
+    "conf": 0.945
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153251_582.jpg": [
+   {
+    "category": "2",
+    "conf": 0.929
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153252_739.jpg": [
+   {
+    "category": "2",
+    "conf": 0.93
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153254_054.jpg": [
+   {
+    "category": "2",
+    "conf": 0.921
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153255_604.jpg": [
+   {
+    "category": "2",
+    "conf": 0.912
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153256_800.jpg": [
+   {
+    "category": "2",
+    "conf": 0.898
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153258_116.jpg": [
+   {
+    "category": "2",
+    "conf": 0.933
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153259_269.jpg": [
+   {
+    "category": "2",
+    "conf": 0.922
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153300_573.jpg": [
+   {
+    "category": "2",
+    "conf": 0.902
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153301_909.jpg": [
+   {
+    "category": "2",
+    "conf": 0.822
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153303_051.jpg": [
+   {
+    "category": "2",
+    "conf": 0.897
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153304_361.jpg": [
+   {
+    "category": "2",
+    "conf": 0.895
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153305_509.jpg": [
+   {
+    "category": "2",
+    "conf": 0.91
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153306_829.jpg": [
+   {
+    "category": "2",
+    "conf": 0.871
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153308_014.jpg": [
+   {
+    "category": "2",
+    "conf": 0.94
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153309_316.jpg": [
+   {
+    "category": "2",
+    "conf": 0.929
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_153310_634.jpg": [
+   {
+    "category": "2",
+    "conf": 0.875
+   }
+  ],
+  "wildlifecam10__2026-09-06__train_173241_846.jpg": [],
+  "wildlifecam10__2026-09-07__train_083311_402.jpg": [],
+  "wildlifecam10__2026-09-07__train_093317_114.jpg": [],
+  "wildlifecam10__2026-09-07__train_163315_301.jpg": [],
+  "wildlifecam10__2026-09-08__train_083301_459.jpg": [],
+  "wildlifecam10__2026-09-08__train_123327_590.jpg": [],
+  "wildlifecam10__2026-09-08__train_133325_666.jpg": [],
+  "wildlifecam10__2026-09-08__train_193323_886.jpg": [],
+  "wildlifecam10__2026-09-09__train_093324_397.jpg": [],
+  "wildlifecam10__2026-09-09__train_093340_260.jpg": [
+   {
+    "category": "2",
+    "conf": 0.13
+   }
+  ],
+  "wildlifecam10__2026-09-09__train_163335_129.jpg": [],
+  "wildlifecam10__2026-09-10__train_113346_707.jpg": [],
+  "wildlifecam12__2026-08-28__train_164330_590.jpg": [],
+  "wildlifecam12__2026-08-28__train_164336_454.jpg": [],
+  "wildlifecam12__2026-08-29__train_093351_551.jpg": [],
+  "wildlifecam12__2026-08-29__train_113351_783.jpg": [],
+  "wildlifecam12__2026-08-29__train_113359_546.jpg": [],
+  "wildlifecam12__2026-08-29__train_123340_196.jpg": [],
+  "wildlifecam12__2026-08-29__train_123344_945.jpg": [],
+  "wildlifecam12__2026-08-30__train_072342_640.jpg": [
+   {
+    "category": "3",
+    "conf": 0.315
+   }
+  ],
+  "wildlifecam12__2026-08-30__train_092346_608.jpg": [
+   {
+    "category": "3",
+    "conf": 0.574
+   }
+  ],
+  "wildlifecam12__2026-08-30__train_092410_540.jpg": [
+   {
+    "category": "3",
+    "conf": 0.642
+   }
+  ],
+  "wildlifecam12__2026-08-30__train_092411_797.jpg": [
+   {
+    "category": "3",
+    "conf": 0.605
+   }
+  ],
+  "wildlifecam12__2026-08-30__train_102404_694.jpg": [
+   {
+    "category": "3",
+    "conf": 0.133
+   }
+  ],
+  "wildlifecam12__2026-08-30__train_102409_527.jpg": [],
+  "wildlifecam12__2026-08-30__train_152343_628.jpg": [
+   {
+    "category": "1",
+    "conf": 0.16
+   },
+   {
+    "category": "3",
+    "conf": 0.27
+   }
+  ],
+  "wildlifecam12__2026-08-30__train_172343_932.jpg": [
+   {
+    "category": "3",
+    "conf": 0.345
+   }
+  ],
+  "wildlifecam12__2026-08-31__train_092354_263.jpg": [
+   {
+    "category": "3",
+    "conf": 0.181
+   }
+  ],
+  "wildlifecam12__2026-08-31__train_182421_537.jpg": [
+   {
+    "category": "1",
+    "conf": 0.244
+   },
+   {
+    "category": "3",
+    "conf": 0.419
+   }
+  ],
+  "wildlifecam12__2026-09-01__train_092418_546.jpg": [
+   {
+    "category": "3",
+    "conf": 0.451
+   }
+  ],
+  "wildlifecam12__2026-09-01__train_122422_358.jpg": [
+   {
+    "category": "3",
+    "conf": 0.194
+   }
+  ],
+  "wildlifecam12__2026-09-01__train_122424_611.jpg": [
+   {
+    "category": "3",
+    "conf": 0.153
+   }
+  ],
+  "wildlifecam12__2026-09-01__train_122430_270.jpg": [
+   {
+    "category": "3",
+    "conf": 0.216
+   }
+  ],
+  "wildlifecam12__2026-09-01__train_132425_678.jpg": [
+   {
+    "category": "3",
+    "conf": 0.208
+   },
+   {
+    "category": "1",
+    "conf": 0.368
+   }
+  ],
+  "wildlifecam12__2026-09-01__train_152410_262.jpg": [
+   {
+    "category": "3",
+    "conf": 0.307
+   }
+  ],
+  "wildlifecam12__2026-09-02__train_082441_475.jpg": [
+   {
+    "category": "3",
+    "conf": 0.307
+   }
+  ],
+  "wildlifecam12__2026-09-02__train_102426_175.jpg": [
+   {
+    "category": "3",
+    "conf": 0.468
+   }
+  ],
+  "wildlifecam12__2026-09-02__train_152416_002.jpg": [
+   {
+    "category": "3",
+    "conf": 0.204
+   },
+   {
+    "category": "1",
+    "conf": 0.243
+   }
+  ],
+  "wildlifecam12__2026-09-02__train_152434_085.jpg": [
+   {
+    "category": "3",
+    "conf": 0.174
+   }
+  ],
+  "wildlifecam12__2026-09-02__train_152443_590.jpg": [
+   {
+    "category": "3",
+    "conf": 0.172
+   }
+  ],
+  "wildlifecam12__2026-09-03__train_062446_167.jpg": [
+   {
+    "category": "3",
+    "conf": 0.362
+   }
+  ],
+  "wildlifecam12__2026-09-03__train_102432_995.jpg": [
+   {
+    "category": "3",
+    "conf": 0.116
+   }
+  ],
+  "wildlifecam12__2026-09-03__train_112438_964.jpg": [],
+  "wildlifecam12__2026-09-03__train_162436_300.jpg": [
+   {
+    "category": "3",
+    "conf": 0.261
+   },
+   {
+    "category": "1",
+    "conf": 0.416
+   }
+  ],
+  "wildlifecam4__2026-08-23__train_161026_455.jpg": [
+   {
+    "category": "1",
+    "conf": 0.129
+   }
+  ],
+  "wildlifecam4__2026-08-23__train_161104_439.jpg": [],
+  "wildlifecam4__2026-08-23__train_162045_535.jpg": [],
+  "wildlifecam4__2026-08-23__train_162056_077.jpg": [],
+  "wildlifecam4__2026-08-23__train_163031_955.jpg": [],
+  "wildlifecam4__2026-08-23__train_163046_784.jpg": [],
+  "wildlifecam4__2026-08-23__train_163050_964.jpg": [],
+  "wildlifecam4__2026-08-23__train_163103_658.jpg": [],
+  "wildlifecam4__2026-08-23__train_164042_588.jpg": [],
+  "wildlifecam4__2026-08-23__train_164106_974.jpg": [],
+  "wildlifecam4__2026-08-23__train_165033_129.jpg": [],
+  "wildlifecam4__2026-08-23__train_165054_206.jpg": [],
+  "wildlifecam4__2026-08-23__train_165102_637.jpg": [],
+  "wildlifecam4__2026-08-23__train_170044_923.jpg": [],
+  "wildlifecam4__2026-08-23__train_170059_655.jpg": [],
+  "wildlifecam4__2026-08-23__train_171051_444.jpg": [],
+  "wildlifecam4__2026-08-23__train_172111_590.jpg": [],
+  "wildlifecam4__2026-08-23__train_173024_212.jpg": [],
+  "wildlifecam4__2026-08-23__train_173114_829.jpg": [],
+  "wildlifecam4__2026-08-23__train_174045_340.jpg": [],
+  "wildlifecam4__2026-08-23__train_174118_039.jpg": [
+   {
+    "category": "1",
+    "conf": 0.152
+   }
+  ],
+  "wildlifecam4__2026-08-23__train_175045_427.jpg": [],
+  "wildlifecam4__2026-08-23__train_175049_668.jpg": [],
+  "wildlifecam4__2026-08-23__train_175112_868.jpg": [],
+  "wildlifecam4__2026-08-23__train_180110_976.jpg": [],
+  "wildlifecam4__2026-08-23__train_180116_218.jpg": [],
+  "wildlifecam4__2026-08-23__train_181021_502.jpg": [],
+  "wildlifecam4__2026-08-23__train_181116_393.jpg": [],
+  "wildlifecam4__2026-08-23__train_182031_251.jpg": [],
+  "wildlifecam4__2026-08-23__train_182042_880.jpg": [],
+  "wildlifecam4__2026-08-23__train_182043_936.jpg": [],
+  "wildlifecam4__2026-08-23__train_183039_902.jpg": [],
+  "wildlifecam4__2026-08-23__train_183044_123.jpg": [],
+  "wildlifecam4__2026-08-23__train_183102_061.jpg": [],
+  "wildlifecam4__2026-08-23__train_184051_597.jpg": [],
+  "wildlifecam4__2026-08-23__train_185023_144.jpg": [],
+  "wildlifecam4__2026-08-23__train_185032_636.jpg": [],
+  "wildlifecam4__2026-08-23__train_190039_166.jpg": [],
+  "wildlifecam4__2026-08-23__train_191037_081.jpg": [],
+  "wildlifecam4__2026-08-23__train_191041_299.jpg": [],
+  "wildlifecam4__2026-08-23__train_191056_058.jpg": [],
+  "wildlifecam4__2026-08-23__train_191103_440.jpg": [],
+  "wildlifecam4__2026-08-23__train_192031_979.jpg": [],
+  "wildlifecam4__2026-08-23__train_192039_353.jpg": [],
+  "wildlifecam4__2026-08-23__train_192044_628.jpg": [],
+  "wildlifecam4__2026-08-23__train_192100_509.jpg": [],
+  "wildlifecam4__2026-08-24__train_093241_066.jpg": [],
+  "wildlifecam4__2026-08-24__train_163231_983.jpg": [],
+  "wildlifecam4__2026-08-24__train_173234_607.jpg": [],
+  "wildlifecam4__2026-08-25__train_122724_748.jpg": [],
+  "wildlifecam4__2026-08-26__train_072632_269.jpg": [],
+  "wildlifecam4__2026-08-26__train_092646_629.jpg": [
+   {
+    "category": "1",
+    "conf": 0.591
+   },
+   {
+    "category": "1",
+    "conf": 0.807
+   }
+  ],
+  "wildlifecam4__2026-08-26__train_092647_748.jpg": [
+   {
+    "category": "1",
+    "conf": 0.775
+   },
+   {
+    "category": "1",
+    "conf": 0.822
+   }
+  ],
+  "wildlifecam4__2026-08-26__train_122627_038.jpg": [],
+  "wildlifecam4__2026-08-26__train_122637_055.jpg": [],
+  "wildlifecam4__2026-08-26__train_132636_466.jpg": [],
+  "wildlifecam4__2026-08-26__train_152622_861.jpg": [],
+  "wildlifecam4__2026-08-26__train_193822_791.jpg": [],
+  "wildlifecam4__2026-08-27__train_071844_525.jpg": [],
+  "wildlifecam4__2026-08-27__train_151841_265.jpg": [
+   {
+    "category": "1",
+    "conf": 0.423
+   }
+  ],
+  "wildlifecam4__2026-08-28__train_113838_538.jpg": [
+   {
+    "category": "1",
+    "conf": 0.224
+   }
+  ],
+  "wildlifecam4__2026-08-29__train_122912_190.jpg": [],
+  "wildlifecam4__2026-08-30__train_082901_096.jpg": [],
+  "wildlifecam4__2026-08-30__train_092925_585.jpg": [],
+  "wildlifecam4__2026-08-30__train_182917_887.jpg": [],
+  "wildlifecam4__2026-08-31__train_112905_139.jpg": [],
+  "wildlifecam4__2026-08-31__train_122923_208.jpg": [],
+  "wildlifecam4__2026-08-31__train_132932_162.jpg": [],
+  "wildlifecam4__2026-09-01__train_062915_298.jpg": [],
+  "wildlifecam4__2026-09-01__train_152939_762.jpg": [],
+  "wildlifecam4__2026-09-01__train_152940_865.jpg": [],
+  "wildlifecam4__2026-09-01__train_152945_669.jpg": [],
+  "wildlifecam4__2026-09-01__train_162936_700.jpg": [],
+  "wildlifecam4__2026-09-03__train_082935_443.jpg": [],
+  "wildlifecam4__2026-09-03__train_082949_831.jpg": [],
+  "wildlifecam4__2026-09-04__train_132957_800.jpg": [],
+  "wildlifecam4__2026-09-05__train_082952_196.jpg": [],
+  "wildlifecam4__2026-09-05__train_083005_540.jpg": [],
+  "wildlifecam4__2026-09-05__train_093005_744.jpg": [],
+  "wildlifecam4__2026-09-05__train_093010_153.jpg": [],
+  "wildlifecam4__2026-09-05__train_093016_864.jpg": [],
+  "wildlifecam4__2026-09-05__train_103012_833.jpg": [
+   {
+    "category": "1",
+    "conf": 0.825
+   }
+  ],
+  "wildlifecam4__2026-09-05__train_122959_507.jpg": [],
+  "wildlifecam4__2026-09-05__train_123021_923.jpg": [],
+  "wildlifecam4__2026-09-05__train_133021_952.jpg": [],
+  "wildlifecam4__2026-09-05__train_163022_947.jpg": [],
+  "wildlifecam4__2026-09-06__train_103023_374.jpg": [],
+  "wildlifecam4__2026-09-06__train_113003_412.jpg": [
+   {
+    "category": "1",
+    "conf": 0.14
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_113030_665.jpg": [
+   {
+    "category": "1",
+    "conf": 0.202
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_123020_320.jpg": [],
+  "wildlifecam4__2026-09-06__train_123025_942.jpg": [],
+  "wildlifecam4__2026-09-06__train_153005_297.jpg": [
+   {
+    "category": "2",
+    "conf": 0.291
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153007_602.jpg": [
+   {
+    "category": "2",
+    "conf": 0.968
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153008_760.jpg": [
+   {
+    "category": "2",
+    "conf": 0.915
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153016_672.jpg": [
+   {
+    "category": "2",
+    "conf": 0.92
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153017_836.jpg": [
+   {
+    "category": "2",
+    "conf": 0.907
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153018_964.jpg": [
+   {
+    "category": "2",
+    "conf": 0.862
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153021_211.jpg": [
+   {
+    "category": "2",
+    "conf": 0.804
+   }
+  ],
+  "wildlifecam4__2026-09-06__train_153022_359.jpg": [
+   {
+    "category": "2",
+    "conf": 0.852
+   }
+  ],
+  "wildlifecam4__2026-09-07__train_093018_957.jpg": [],
+  "wildlifecam4__2026-09-07__train_093026_668.jpg": [],
+  "wildlifecam4__2026-09-07__train_093041_051.jpg": [],
+  "wildlifecam4__2026-09-07__train_113020_481.jpg": [
+   {
+    "category": "1",
+    "conf": 0.157
+   }
+  ],
+  "wildlifecam4__2026-09-07__train_113041_662.jpg": [
+   {
+    "category": "1",
+    "conf": 0.141
+   }
+  ],
+  "wildlifecam4__2026-09-07__train_123029_467.jpg": [],
+  "wildlifecam4__2026-09-07__train_123040_698.jpg": [],
+  "wildlifecam4__2026-09-07__train_143013_027.jpg": [],
+  "wildlifecam4__2026-09-07__train_193023_635.jpg": [],
+  "wildlifecam4__2026-09-07__train_215024_385.jpg": [
+   {
+    "category": "2",
+    "conf": 0.161
+   },
+   {
+    "category": "2",
+    "conf": 0.446
+   }
+  ],
+  "wildlifecam4__2026-09-08__train_083041_371.jpg": [],
+  "wildlifecam4__2026-09-08__train_123023_570.jpg": [],
+  "wildlifecam4__2026-09-08__train_173023_288.jpg": [],
+  "wildlifecam4__2026-09-09__train_113100_884.jpg": [],
+  "wildlifecam4__2026-09-09__train_123039_529.jpg": [],
+  "wildlifecam4__2026-09-10__train_124055_149.jpg": [],
+  "wildlifecam4__2026-09-10__train_154102_652.jpg": []
+ },
+ "findings_digest": "d57038e3f8c75627"
+}

@@ -22,8 +22,30 @@ the whole point: `evaluation-design.md` opens by admitting that not one of
 the camera's thresholds was chosen by measuring a real camera in real woods.
 This directory is where that gets fixed, one measurement at a time.
 
+## Two kinds of record
+
+**Analyses** are files in this directory: prose, dated, each stating its
+inputs and what it does not establish.
+
+**Raw results** live in subdirectories next to them ---
+[`benchmarks/`](benchmarks/) so far --- as machine-readable files a tool can
+read back. Those accumulate; an analysis is written when they add up to
+something worth saying. A table of timings is data. "The Mac Studio should
+run the nightly pass, and here is what that costs" is a finding, and
+findings get prose.
+
+Record raw results even when the conditions were poor, as long as the
+conditions are recorded with them. A benchmark taken on battery is not that
+machine's throughput and must not be quoted as such, but it is a real
+measurement of a real run, and the file says `on_battery: true` where
+nobody can miss it. Deleting it loses evidence; mislabelling it would be
+the actual sin.
+
 ## Index
 
 - [2026-09-12 --- the first MegaDetector pass over the training bursts](2026-09-12-first-megadetector-pass.md)
   --- 5,459 frames, three cameras, three animals. Two misses explained, and
   the shadow rule vindicated.
+- [`benchmarks/`](benchmarks/) --- how long the detector takes on each
+  machine in the lab, on one fixed corpus, with the rules that make the
+  numbers comparable.
