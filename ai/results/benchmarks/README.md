@@ -1,7 +1,13 @@
 # Benchmarks
 
-One JSON file per (machine, model, device), plus whatever write-ups the
-numbers earn. `python3 -m trailcam bench report` reads them into a table.
+One JSON file per (machine, model, device, mode), plus whatever write-ups
+the numbers earn. `python3 -m trailcam bench report` reads them into a
+table.
+
+First write-up: [which machine should run the
+pass](../2026-09-13-benchmarking-the-lab.md) --- the Mac Studio is 36x the
+ThinkPad, batching on MPS made it *worse*, and no machine disagreed with
+another about a single verdict.
 
 ## What is being measured, and why that
 

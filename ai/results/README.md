@@ -46,6 +46,9 @@ the actual sin.
 - [2026-09-12 --- the first MegaDetector pass over the training bursts](2026-09-12-first-megadetector-pass.md)
   --- 5,459 frames, three cameras, three animals. Two misses explained, and
   the shadow rule vindicated.
+- [2026-09-13 --- which machine should run the pass](2026-09-13-benchmarking-the-lab.md)
+  --- the Mac Studio is 36x the ThinkPad, batching made it worse, and no
+  machine disagreed with another about a single verdict.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each
   machine in the lab, on one fixed corpus, with the rules that make the
   numbers comparable.
