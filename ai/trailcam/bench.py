@@ -8,9 +8,34 @@ answers?**
 
 So the benchmark measures the pass we actually run: decode a JPEG from
 disk, letterbox it, one forward pass, non-maximum suppression, one image at
-a time.  Not inference-only, not batched, not synthetic.  On a fast GPU the
-JPEG decode turns out to be a serious share of the total, and a benchmark
-that quietly skipped it would recommend hardware that does not help.
+a time.  Not inference-only and not synthetic.  On a fast GPU the JPEG
+decode turns out to be a serious share of the total, and a benchmark that
+quietly skipped it would recommend hardware that does not help.
+
+That one-at-a-time loop is what `detect.py` does today, and it is the
+default here -- `--mode single` -- because it is the only shape every
+machine can run, which makes it the number they can all be compared on.
+
+`--mode batch` measures the alternative, using the library's own batch
+pipeline.  Three knobs matter there and they fix different problems:
+
+    --batch-size      how many images go through the GPU at once.  The
+                      library forces this to 1 on CPU, so it does nothing
+                      on a machine without a GPU -- which is exactly why
+                      we never wrote it: the only machine we had was this
+                      laptop.
+    --loader-workers  decode images in parallel with inference instead of
+                      between inferences.  Batching fills the device;
+                      this stops it starving.  Measured on this CPU the
+                      decode was 11% of the frame, but when inference
+                      drops to GPU speed the same decode is most of it.
+    --n-cores         CPU multiprocessing.  Ignored on a GPU.
+
+Whether any of them help is a question for the numbers, not for taste, and
+a batched result is reported as its own row rather than replacing the
+baseline.  Batching can also change the answers slightly, because images
+are letterboxed to a common size within a batch -- which is what the
+findings digest is for.
 
 Four rules, each one there because breaking it is how benchmarks lie:
 
@@ -95,9 +120,9 @@ def build_corpus(database, destination, size=250, seed=20260912):
     frames_directory.mkdir(parents=True, exist_ok=True)
 
     rows = database.execute(
-        """SELECT f.id, f.path, f.camera, f.mean_luma, t.label
-             FROM frames f JOIN truth t ON t.frame_id = f.id
-            WHERE t.label NOT IN ('not yet seen', 'unreadable')
+        """SELECT f.id, f.path, f.camera, f.mean_luma, v.verdict AS label
+             FROM frames f JOIN verdicts v ON v.frame_id = f.id
+            WHERE v.verdict NOT IN ('not yet seen', 'unreadable')
             ORDER BY f.path"""
     ).fetchall()
 
@@ -302,8 +327,16 @@ def describe_machine(device=None, threads=None):
 
 def run_benchmark(corpus_directory, model=None, device=None, threads=None,
                   min_seconds=MIN_SECONDS, max_passes=MAX_PASSES,
-                  verify=True):
+                  verify=True, mode="single", batch_size=1, n_cores=1,
+                  loader_workers=0):
     """Time one model on one device over the corpus.  Returns a result dict."""
+    if mode == "batch":
+        return _run_batched(corpus_directory, model=model, device=device,
+                            threads=threads, min_seconds=min_seconds,
+                            max_passes=max_passes, verify=verify,
+                            batch_size=batch_size, n_cores=n_cores,
+                            loader_workers=loader_workers)
+
     from megadetector.visualization.visualization_utils import load_image
 
     from .detector import MegaDetector
@@ -386,6 +419,8 @@ def run_benchmark(corpus_directory, model=None, device=None, threads=None,
             "frames": len(files),
             "bytes": manifest["total_bytes"],
         },
+        "mode": {"name": "single", "batch_size": 1, "n_cores": 1,
+                 "loader_workers": 0},
         "model": {
             "name": name,
             "weights": Path(detector.weights).name,
@@ -439,10 +474,16 @@ def save_result(result, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
+    mode = result.get("mode", {"name": "single"})
+    shape = mode["name"]
+    if mode["name"] == "batch":
+        shape += (f"{mode['batch_size']}c{mode['n_cores']}"
+                  f"l{mode['loader_workers']}")
+
     name = (f"{result['machine']['host']}"
             f"-{result['model']['name']}"
-            f"-{result['model']['device'].replace(':', '')}.json"
-            ).replace("/", "-")
+            f"-{result['model']['device'].replace(':', '')}"
+            f"-{shape}.json").replace("/", "-")
 
     path = directory / name
     with open(path, "w") as handle:
@@ -475,24 +516,35 @@ def summarise(paths):
     results.sort(key=lambda r: r["timing"]["seconds_per_frame"])
     fastest = results[0]["timing"]["seconds_per_frame"]
 
-    print(f"{'machine':22s} {'model':16s} {'device':8s} "
+    print(f"{'machine':20s} {'model':15s} {'device':7s} {'mode':14s} "
           f"{'s/frame':>8s} {'frames/s':>9s} {'decode':>7s} {'infer':>7s} "
           f"{'throt':>6s} {'vs best':>8s}")
-    print("-" * 100)
+    print("-" * 116)
+
+    def number(value, width, places):
+        return (f"{value:{width}.{places}f}" if value is not None
+                else f"{'-':>{width}}")
 
     for result in results:
         timing = result["timing"]
         machine = result["machine"]
+        mode = result.get("mode", {"name": "single"})
         battery = " (battery!)" if machine.get("on_battery") else ""
 
-        print(f"{machine['host'][:22]:22s} "
-              f"{result['model']['name'][:16]:16s} "
-              f"{result['model']['device'][:8]:8s} "
+        shape = mode["name"]
+        if mode["name"] == "batch":
+            shape += (f" b{mode['batch_size']}"
+                      f"/c{mode['n_cores']}/l{mode['loader_workers']}")
+
+        print(f"{machine['host'][:20]:20s} "
+              f"{result['model']['name'][:15]:15s} "
+              f"{result['model']['device'][:7]:7s} "
+              f"{shape[:14]:14s} "
               f"{timing['seconds_per_frame']:8.3f} "
               f"{timing['frames_per_second']:9.2f} "
-              f"{timing['decode_seconds_median']:7.3f} "
-              f"{timing['inference_seconds_median']:7.3f} "
-              f"{timing['throttle_ratio']:6.2f} "
+              f"{number(timing['decode_seconds_median'], 7, 3)} "
+              f"{number(timing['inference_seconds_median'], 7, 3)} "
+              f"{number(timing['throttle_ratio'], 6, 2)} "
               f"{timing['seconds_per_frame'] / fastest:7.1f}x"
               f"{battery}")
 
@@ -561,3 +613,153 @@ def _compare_findings(first, second):
         "max_delta": max_delta,
         "verdicts_changed": verdicts_changed,
     }
+
+
+# ------------------------------------------------------------
+# The batched alternative
+# ------------------------------------------------------------
+
+def _run_batched(corpus_directory, model=None, device=None, threads=None,
+                 min_seconds=MIN_SECONDS, max_passes=MAX_PASSES, verify=True,
+                 batch_size=1, n_cores=1, loader_workers=0):
+    """Time the library's batch pipeline instead of our one-at-a-time loop.
+
+    Measured differently from single mode, and the difference is worth
+    understanding before comparing the two numbers.
+
+    `load_and_run_detector_batch` takes a path and loads the model itself,
+    every call.  So the corpus is repeated INSIDE one call rather than
+    across several, and the model load -- timed separately first -- is
+    subtracted from the total.  That is an approximation.  It is a small
+    one (four seconds against three minutes) and it is stated rather than
+    hidden, but it means batch and single numbers are not identical
+    measurements of identical things: single mode times each frame, this
+    times the whole run and divides.
+
+    What is lost: the per-pass times, and with them the throttle signal.
+    Run it twice if you need to know whether the machine got hot.
+    """
+    from megadetector.detection.run_detector_batch import \
+        load_and_run_detector_batch
+
+    from .detector import MegaDetector
+
+    corpus_directory = Path(corpus_directory)
+    manifest = load_corpus(corpus_directory, verify=verify)
+    files = [str(corpus_directory / "frames" / f["file"])
+             for f in manifest["frames"]]
+
+    name = model or config.DETECTOR
+
+    print(f"\nLoading {name}"
+          + (f" on {device}" if device else " (auto device)")
+          + f", batch {batch_size}, {n_cores} cores, "
+            f"{loader_workers} loader workers...")
+
+    load_started = time.perf_counter()
+    detector = MegaDetector(model=name, threads=threads, device=device)
+    load_seconds = time.perf_counter() - load_started
+    weights = detector.weights
+    resolved_device = detector.device
+    del detector                       # the batch call loads its own
+
+    options = {"device": device} if device else None
+
+    # `quiet=True` silences the library's own prints but not tqdm, which
+    # writes a progress bar per image and buries the result.
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+    def batch_call(image_files):
+        return load_and_run_detector_batch(
+            weights, image_files,
+            confidence_threshold=config.MIN_STORED_CONFIDENCE,
+            n_cores=n_cores, batch_size=batch_size,
+            use_image_queue=bool(loader_workers),
+            loader_workers=max(1, loader_workers),
+            quiet=True, detector_options=options)
+
+    if batch_size > 1 and str(resolved_device) == "cpu":
+        print("  note: the library forces batch size to 1 on CPU, so this "
+              "run is not really batched.")
+
+    # Calibrate on a slice, so the measured call can be sized to reach the
+    # minimum duration in one go.
+    print(f"  calibrating on {WARMUP_FRAMES * 3} frames...")
+    calibration_started = time.perf_counter()
+    batch_call(files[:WARMUP_FRAMES * 3])
+    calibration = max(0.001, time.perf_counter() - calibration_started
+                      - load_seconds)
+    rate = (WARMUP_FRAMES * 3) / calibration
+
+    repeats = max(1, min(max_passes,
+                         int((min_seconds * rate) // len(files)) + 1))
+
+    print(f"  measuring: {repeats} x {len(files)} frames in one call "
+          f"(~{repeats * len(files) / rate:.0f}s expected)")
+
+    measured_started = time.perf_counter()
+    results = batch_call(files * repeats)
+    total = time.perf_counter() - measured_started
+
+    measured = max(0.001, total - load_seconds)
+    frames = len(files) * repeats
+
+    findings = {}
+    for entry in results:
+        key = Path(entry.get("file", "")).name
+        if key in findings:
+            continue                   # repeats: the first one is enough
+        findings[key] = [
+            {"category": d["category"], "conf": round(d["conf"], 4)}
+            for d in entry.get("detections", []) if d["conf"] >= 0.1]
+
+    result = {
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "corpus": {
+            "id": manifest["corpus_id"],
+            "frames": len(files),
+            "bytes": manifest["total_bytes"],
+        },
+        "mode": {
+            "name": "batch",
+            "batch_size": batch_size,
+            "n_cores": n_cores,
+            "loader_workers": loader_workers,
+            "note": "model load subtracted from one timed call; no per-pass "
+                    "times, so no throttle signal",
+        },
+        "model": {
+            "name": name,
+            "weights": Path(weights).name,
+            "device": str(resolved_device),
+        },
+        "machine": describe_machine(device=str(resolved_device),
+                                    threads=threads),
+        "timing": {
+            "model_load_seconds": round(load_seconds, 2),
+            "passes": [round(measured, 3)],
+            "frames_measured": frames,
+            "seconds_per_frame": round(measured / frames, 4),
+            "frames_per_second": round(frames / measured, 2),
+            "p50_seconds": None,
+            "p90_seconds": None,
+            "decode_seconds_median": None,
+            "inference_seconds_median": None,
+            "throttle_ratio": None,
+        },
+        "findings": findings,
+        "findings_digest": hashlib.sha256(
+            json.dumps(findings, sort_keys=True).encode()).hexdigest()[:16],
+    }
+
+    timing = result["timing"]
+    print(f"\n  {name} on {result['model']['device']} "
+          f"(batch {batch_size}, {loader_workers} loaders)")
+    print(f"    {timing['seconds_per_frame']:.3f} s/frame  "
+          f"({timing['frames_per_second']:.2f} frames/s) over {frames} frames")
+
+    if result["machine"].get("on_battery"):
+        print("    WARNING: this machine is on battery. Plug it in and "
+              "run again; the number above is not comparable.")
+
+    return result

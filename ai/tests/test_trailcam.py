@@ -182,11 +182,11 @@ class ManifestBase(unittest.TestCase):
         return [row["id"] for row in self.database.execute(
             "SELECT id FROM frames ORDER BY id")]
 
-    def _label_of(self, path_ending):
+    def _verdict_on(self, path_ending):
         row = self.database.execute(
-            "SELECT label FROM truth WHERE path LIKE ?",
+            "SELECT verdict FROM verdicts WHERE path LIKE ?",
             (f"%{path_ending}",)).fetchone()
-        return row["label"]
+        return row["verdict"]
 
 
 class Frames(ManifestBase):
@@ -249,12 +249,12 @@ class CameraRuns(ManifestBase):
 
         self.assertEqual(json.loads(metrics)["extent"], "0.65")
 
-    def test_the_camera_decision_reaches_the_truth_view(self):
+    def test_the_camera_decision_reaches_the_verdicts_view(self):
         frames = [self._frame("train_1.jpg", decision="strong motion")]
         self._add(*frames)
         manifest.record_camera_decisions(self.database, frames)
 
-        row = self.database.execute("SELECT * FROM truth").fetchone()
+        row = self.database.execute("SELECT * FROM verdicts").fetchone()
 
         self.assertEqual(row["camera_decision"], "strong motion")
         self.assertEqual(row["camera_code"], "abc123")
@@ -345,7 +345,7 @@ class RunIsolation(ManifestBase):
 
 
 class TheConfidenceSplit(ManifestBase):
-    """The `truth` view, which is the whole idea, expressed in SQL."""
+    """The `verdicts` view, which is the whole idea, expressed in SQL."""
 
     def setUp(self):
         super().setUp()
@@ -358,28 +358,28 @@ class TheConfidenceSplit(ManifestBase):
                                    list(boxes), error=error)
 
     def test_a_frame_no_run_has_seen(self):
-        self.assertEqual(self._label_of("train_1.jpg"), "not yet seen")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "not yet seen")
 
     def test_a_confident_animal(self):
         self._record(Box("animal", 0.94, .1, .2, .3, .4, None))
-        self.assertEqual(self._label_of("train_1.jpg"), "animal")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "animal")
 
     def test_no_boxes_at_all_is_empty(self):
         self._record()
-        self.assertEqual(self._label_of("train_1.jpg"), "empty")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "empty")
 
     def test_the_muddy_middle(self):
         self._record(Box("animal", 0.42, .1, .2, .3, .4, None))
-        self.assertEqual(self._label_of("train_1.jpg"), "uncertain")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "uncertain")
 
     def test_a_person_is_neither_animal_nor_empty(self):
         self._record(Box("person", 0.91, .1, .2, .3, .4, None))
-        self.assertEqual(self._label_of("train_1.jpg"), "person")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "person")
 
     def test_unreadable_says_so_rather_than_reading_as_empty(self):
         self._record(error=OSError("truncated"))
 
-        self.assertEqual(self._label_of("train_1.jpg"), "unreadable")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "unreadable")
         # ... and it is out of the queue, so one bad file cannot loop.
         self.assertEqual(manifest.frames_to_detect(self.database, self.run), [])
 
@@ -391,14 +391,14 @@ class TheConfidenceSplit(ManifestBase):
 
     def test_switching_the_reference_changes_the_answer(self):
         self._record(Box("animal", 0.94, .1, .2, .3, .4, None))
-        self.assertEqual(self._label_of("train_1.jpg"), "animal")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "animal")
 
         # A second opinion, and no recompute needed to adopt it.
         other = manifest.start_run(self.database, "detector", "redwood")
         manifest.record_detections(self.database, other, self.frame_ids[0], [])
         manifest.set_reference(self.database, other)
 
-        self.assertEqual(self._label_of("train_1.jpg"), "empty")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "empty")
 
     def test_only_one_run_can_be_the_reference(self):
         other = manifest.start_run(self.database, "detector", "redwood")
@@ -416,8 +416,8 @@ class TheConfidenceSplit(ManifestBase):
                 "UPDATE runs SET role = 'reference' WHERE id = ?", (other,))
 
 
-class HumanLabels(ManifestBase):
-    """Verdicts a person gave, which no rerun may touch."""
+class HumanAnnotations(ManifestBase):
+    """What a person saw, which no rerun may touch."""
 
     def setUp(self):
         super().setUp()
@@ -427,29 +427,29 @@ class HumanLabels(ManifestBase):
         manifest.record_detections(self.database, self.run, self.frame_ids[0],
                                    [Box("animal", 0.99, .1, .2, .3, .4, None)])
 
-    def test_a_hand_label_beats_the_detector(self):
-        manifest.add_label(self.database, self.frame_ids[0], "empty",
+    def test_an_annotation_beats_the_detector(self):
+        manifest.add_annotation(self.database, self.frame_ids[0], "empty",
                            who="nolan")
 
-        self.assertEqual(self._label_of("train_1.jpg"), "empty")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "empty")
 
     def test_rerunning_the_detector_cannot_erase_it(self):
-        manifest.add_label(self.database, self.frame_ids[0], "empty")
+        manifest.add_annotation(self.database, self.frame_ids[0], "empty")
         manifest.record_detections(self.database, self.run, self.frame_ids[0],
                                    [Box("animal", 0.99, .1, .2, .3, .4, None)])
 
-        self.assertEqual(self._label_of("train_1.jpg"), "empty")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "empty")
 
     def test_two_people_may_disagree_and_the_later_one_counts(self):
-        manifest.add_label(self.database, self.frame_ids[0], "empty",
+        manifest.add_annotation(self.database, self.frame_ids[0], "empty",
                            who="nolan")
-        manifest.add_label(self.database, self.frame_ids[0], "animal",
+        manifest.add_annotation(self.database, self.frame_ids[0], "animal",
                            who="murray")
 
-        self.assertEqual(self._label_of("train_1.jpg"), "animal")
+        self.assertEqual(self._verdict_on("train_1.jpg"), "animal")
         # Both are kept: disagreement is data.
         self.assertEqual(self.database.execute(
-            "SELECT COUNT(*) FROM labels").fetchone()[0], 2)
+            "SELECT COUNT(*) FROM annotations").fetchone()[0], 2)
 
 
 class Migration(unittest.TestCase):
@@ -529,7 +529,7 @@ class Migration(unittest.TestCase):
         self.assertEqual(row["error"], "truncated")
 
     def test_hand_labels_become_rows_in_their_own_table(self):
-        row = self.database.execute("SELECT * FROM labels").fetchone()
+        row = self.database.execute("SELECT * FROM annotations").fetchone()
 
         self.assertEqual(row["frame_id"], 1)
         self.assertEqual(row["label"], "animal")
@@ -552,6 +552,79 @@ class Migration(unittest.TestCase):
 
         self.assertEqual(self.database.execute(
             "SELECT COUNT(*) FROM frame_results").fetchone()[0], 2)
+
+
+class RenameMigration(unittest.TestCase):
+    """Version 2 called them `labels` and `truth`.  Both names were wrong."""
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.path = self.directory / "v2.sqlite"
+
+        old = sqlite3.connect(self.path)
+        old.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (2);
+            CREATE TABLE frames (
+                id INTEGER PRIMARY KEY, camera TEXT, day TEXT,
+                path TEXT UNIQUE, captured_at TEXT, mean_luma REAL);
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY, kind TEXT, name TEXT, params TEXT,
+                weights_md5 TEXT, code_version TEXT, host TEXT,
+                started_at TEXT, finished_at TEXT, role TEXT, notes TEXT);
+            CREATE TABLE frame_results (
+                id INTEGER PRIMARY KEY, run_id INTEGER, frame_id INTEGER,
+                recorded_at TEXT, status TEXT DEFAULT 'ok', error TEXT,
+                decision TEXT, largest_area INTEGER, n_animal INTEGER,
+                n_person INTEGER, n_vehicle INTEGER, max_animal_conf REAL,
+                max_person_conf REAL, metrics TEXT);
+            CREATE TABLE detections (
+                id INTEGER PRIMARY KEY, frame_result_id INTEGER,
+                category TEXT, confidence REAL, x REAL, y REAL, w REAL,
+                h REAL, crop_path TEXT);
+            CREATE TABLE labels (
+                id INTEGER PRIMARY KEY, frame_id INTEGER NOT NULL,
+                label TEXT NOT NULL, who TEXT, labelled_at TEXT NOT NULL,
+                notes TEXT);
+            CREATE VIEW latest_label AS SELECT * FROM labels;
+            CREATE VIEW truth AS SELECT f.*, 'empty' AS label FROM frames f;
+            INSERT INTO frames VALUES
+                (1, 'wildlifecam4', '2026-08-24', 'a/train_1.jpg',
+                 '2026-08-24T10:34:15', 128.7);
+            INSERT INTO labels VALUES
+                (1, 1, 'animal', 'nolan', '2026-09-12 11:00:00', NULL);
+        """)
+        old.commit()
+        old.close()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.database = manifest.open_manifest(self.path)
+
+    def tearDown(self):
+        self.database.close()
+        shutil.rmtree(self.directory)
+
+    def test_a_persons_work_survives_the_rename(self):
+        row = self.database.execute("SELECT * FROM annotations").fetchone()
+
+        self.assertEqual(row["label"], "animal")
+        self.assertEqual(row["who"], "nolan")
+
+    def test_the_old_names_are_gone(self):
+        names = {row[0] for row in self.database.execute(
+            "SELECT name FROM sqlite_master")}
+
+        self.assertNotIn("labels", names)
+        self.assertNotIn("truth", names)
+        self.assertIn("annotations", names)
+        self.assertIn("verdicts", names)
+
+    def test_the_annotation_still_wins_afterwards(self):
+        row = self.database.execute(
+            "SELECT verdict, verdict_source FROM verdicts").fetchone()
+
+        self.assertEqual(row["verdict"], "animal")
+        self.assertEqual(row["verdict_source"], "human")
 
 
 class Export(unittest.TestCase):

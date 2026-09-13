@@ -95,7 +95,7 @@ THREADS = max(1, (os.cpu_count() or 4) - 1)
 # These two numbers are the whole idea, which is why they are the two most
 # important constants in this package.
 
-# At or above this, treat an animal box as ground truth.
+# At or above this, the reference run's animal box becomes the verdict.
 ANIMAL_TRUTH = 0.8
 
 # If the best animal box in the frame is below this, treat the frame as

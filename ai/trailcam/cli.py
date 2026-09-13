@@ -5,7 +5,7 @@
     python3 -m trailcam detect                # the real pass, hours long
     python3 -m trailcam report                # what it found
     python3 -m trailcam runs                  # every run, and its coverage
-    python3 -m trailcam reference 3           # which run counts as truth
+    python3 -m trailcam reference 3           # whose answers are the verdict
     python3 -m trailcam compare 1 3           # where two runs disagree
     python3 -m trailcam sample --size 200     # frames to label by eye
     python3 -m trailcam label <path> animal   # record what you saw
@@ -87,7 +87,7 @@ def command_detect(options):
 
 def command_report(options):
     database = manifest_module.open_manifest()
-    manifest_module.refresh_truth_view(database)      # pick up edited config
+    manifest_module.refresh_verdicts(database)      # pick up edited config
     report_module.everything(database)
 
     if options.uncertain:
@@ -99,7 +99,7 @@ def command_report(options):
 
 def command_sample(options):
     database = manifest_module.open_manifest()
-    manifest_module.refresh_truth_view(database)
+    manifest_module.refresh_verdicts(database)
     report_module.check_the_checker(database, sample_size=options.size,
                                     seed=options.seed)
     database.close()
@@ -130,7 +130,8 @@ def command_label(options):
             print(f"  {row['path']}")
         return 1
 
-    manifest_module.add_label(database, rows[0]["id"], options.label)
+    manifest_module.add_annotation(database, rows[0]["id"],
+                                   options.label)
 
     print(f"{rows[0]['path']}: {options.label}")
     database.close()
@@ -169,14 +170,14 @@ def command_runs(options):
         if row["errors"]:
             print(f"      {row['errors']} frames it could not read")
 
-    print("\n* = reference run (what `truth` reads). "
+    print("\n* = reference run (what `verdicts` reads). "
           "Change it with `reference <id>`.")
     database.close()
     return 0
 
 
 def command_reference(options):
-    """Choose which run counts as ground truth."""
+    """Choose which run's answers the `verdicts` view reads."""
     database = manifest_module.open_manifest()
 
     row = database.execute("SELECT * FROM runs WHERE id = ?",
@@ -200,7 +201,7 @@ def command_reference(options):
 
 def command_compare(options):
     database = manifest_module.open_manifest()
-    manifest_module.refresh_truth_view(database)
+    manifest_module.refresh_verdicts(database)
     report_module.compare(database, options.run_a, options.run_b)
     database.close()
     return 0
@@ -217,7 +218,7 @@ def command_bench(options):
     """Build a corpus, time a machine on it, or read the results back."""
     if options.what == "build":
         database = manifest_module.open_manifest()
-        manifest_module.refresh_truth_view(database)
+        manifest_module.refresh_verdicts(database)
         bench_module.build_corpus(database, options.corpus,
                                   size=options.size, seed=options.seed)
         database.close()
@@ -227,7 +228,9 @@ def command_bench(options):
         result = bench_module.run_benchmark(
             options.corpus, model=options.model, device=options.device,
             threads=options.threads, min_seconds=options.min_seconds,
-            verify=not options.no_verify)
+            verify=not options.no_verify, mode=options.mode,
+            batch_size=options.batch_size, n_cores=options.n_cores,
+            loader_workers=options.loader_workers)
         bench_module.save_result(result, options.out)
         return 0
 
@@ -304,7 +307,7 @@ def build_parser():
     runs.set_defaults(function=command_runs)
 
     reference = subcommands.add_parser(
-        "reference", help="choose which run counts as ground truth")
+        "reference", help="choose which run's answers count as the verdict")
     reference.add_argument("run", type=int)
     reference.set_defaults(function=command_reference)
 
@@ -343,6 +346,21 @@ def build_parser():
                             "thermal state")
     bench.add_argument("--no-verify", action="store_true",
                        help="skip the corpus checksum (not recommended)")
+    bench.add_argument("--mode", choices=("single", "batch"),
+                       default="single",
+                       help="single: one frame at a time, what detect.py "
+                            "does today and the number every machine can "
+                            "be compared on. batch: the library's batch "
+                            "pipeline")
+    bench.add_argument("--batch-size", type=int, default=1,
+                       help="images through the GPU at once (batch mode; "
+                            "the library forces 1 on CPU)")
+    bench.add_argument("--n-cores", type=int, default=1,
+                       help="CPU worker processes (batch mode; ignored on "
+                            "a GPU)")
+    bench.add_argument("--loader-workers", type=int, default=0,
+                       help="decode images in parallel with inference "
+                            "(batch mode; 0 disables the image queue)")
     bench.set_defaults(function=command_bench)
 
     return parser

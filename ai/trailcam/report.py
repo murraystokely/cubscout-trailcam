@@ -63,12 +63,12 @@ def coverage(database):
               f"{version:14s} {row['frames']:6d}/{total_frames}  {state}"
               + (f"  {row['errors']} errors" if row["errors"] else ""))
 
-    print("\n  * = the reference run: the one `truth` reads, and the one")
-    print("      every label below comes from.  `trailcam reference <id>`")
+    print("\n  * = the reference run: the one `verdicts` reads, and the")
+    print("      one every verdict below comes from.  `trailcam reference`")
     print("      changes it -- one UPDATE, no recompute.")
 
     if manifest_module.reference_run(database) is None:
-        print("\n  No reference run is set, so nothing can be labelled. "
+        print("\n  No reference run is set, so nothing has a verdict. "
               "Pick one with `trailcam reference <id>`.")
 
 
@@ -80,8 +80,8 @@ def split(database):
 
     rows = database.execute(
         """
-        SELECT label, label_source, COUNT(*) AS n
-          FROM truth GROUP BY label, label_source ORDER BY n DESC
+        SELECT verdict, verdict_source, COUNT(*) AS n
+          FROM verdicts GROUP BY verdict, verdict_source ORDER BY n DESC
         """
     ).fetchall()
 
@@ -91,14 +91,15 @@ def split(database):
         return
 
     for row in rows:
-        source = "" if row["label_source"] == "auto" else " (hand)"
-        print(f"  {row['label'] + source:22s} {row['n']:6d}  "
+        source = "" if row["verdict_source"] == "model" else " (human)"
+        print(f"  {row['verdict'] + source:22s} {row['n']:6d}  "
               f"{100.0 * row['n'] / total:5.1f}%  "
               f"{_bar(row['n'], total)}")
 
-    def count(label, source="auto"):
+    def count(label, source="model"):
         return sum(row["n"] for row in rows
-                   if row["label"] == label and row["label_source"] == source)
+                   if row["verdict"] == label
+                   and row["verdict_source"] == source)
 
     # Only frames the detector has actually seen are in the split at all --
     # counting the queue as "labelled for free" would be a cheerful lie.
@@ -131,12 +132,12 @@ def against_the_camera(database):
 
     rows = database.execute(
         """
-        SELECT label,
+        SELECT verdict,
                COALESCE(camera_decision, '(no CSV row)') AS decision,
                COUNT(*) AS n
-          FROM truth
+          FROM verdicts
          WHERE status IS NOT NULL
-         GROUP BY label, decision
+         GROUP BY verdict, decision
         """
     ).fetchall()
 
@@ -153,8 +154,8 @@ def against_the_camera(database):
     for row in rows:
         outcome = bursts.classify_decision(row["decision"])
 
-        outcomes.setdefault(row["label"], Counter())[outcome] += row["n"]
-        details.setdefault(row["label"], Counter())[row["decision"]] += \
+        outcomes.setdefault(row["verdict"], Counter())[outcome] += row["n"]
+        details.setdefault(row["verdict"], Counter())[row["decision"]] += \
             row["n"]
 
         if outcome == "unknown" and row["decision"] != "(no CSV row)":
@@ -213,11 +214,11 @@ def by_light(database):
                  WHEN mean_luma < {config.DUSK_LUMA} THEN 'dim'
                  ELSE 'daylight'
                END AS light,
-               label,
+               verdict,
                COUNT(*) AS n
-          FROM truth
+          FROM verdicts
          WHERE status IS NOT NULL
-         GROUP BY light, label
+         GROUP BY light, verdict
          ORDER BY light, n DESC
         """
     ).fetchall()
@@ -228,7 +229,7 @@ def by_light(database):
             current = row["light"]
             print(f"\n  {current} (mean_luma "
                   f"{'<' if current == 'dim' else '>='} {config.DUSK_LUMA})")
-        print(f"    {row['label']:22s} {row['n']:6d}")
+        print(f"    {row['verdict']:22s} {row['n']:6d}")
 
 
 def check_the_checker(database, sample_size=200, seed=None):
@@ -243,9 +244,9 @@ def check_the_checker(database, sample_size=200, seed=None):
     """
     rows = database.execute(
         """
-        SELECT path, label, max_animal_conf, camera_decision, mean_luma
-          FROM truth
-         WHERE status IS NOT NULL AND hand_label IS NULL
+        SELECT path, verdict, max_animal_conf, camera_decision, mean_luma
+          FROM verdicts
+         WHERE status IS NOT NULL AND annotation IS NULL
         """
     ).fetchall()
 
@@ -265,7 +266,7 @@ def check_the_checker(database, sample_size=200, seed=None):
     for row in sample:
         luma = f"{row['mean_luma']:5.1f}" if row["mean_luma"] is not None \
             else "    ?"
-        print(f"  {row['path']}  [{row['label']}, "
+        print(f"  {row['path']}  [{row['verdict']}, "
               f"conf {row['max_animal_conf'] or 0:.2f}, luma {luma}]")
 
     return [row["path"] for row in sample]
@@ -276,8 +277,8 @@ def uncertain_queue(database, limit=50):
     rows = database.execute(
         """
         SELECT path, max_animal_conf, camera_decision, mean_luma
-          FROM truth
-         WHERE label = 'uncertain' AND hand_label IS NULL
+          FROM verdicts
+         WHERE verdict = 'uncertain' AND annotation IS NULL
          ORDER BY max_animal_conf DESC
          LIMIT ?
         """,
@@ -385,11 +386,11 @@ def by_deployment(database):
         """
         SELECT r.name AS camera, r.code_version, r.id AS run_id,
                COUNT(*) AS frames,
-               SUM(t.label = 'animal') AS animals,
-               SUM(t.camera_decision IS NOT NULL) AS decided
+               SUM(v.verdict = 'animal') AS animals,
+               SUM(v.camera_decision IS NOT NULL) AS decided
           FROM runs r
           JOIN frame_results fr ON fr.run_id = r.id
-          JOIN truth t ON t.frame_id = fr.frame_id
+          JOIN verdicts v ON v.frame_id = fr.frame_id
          WHERE r.kind = 'camera'
          GROUP BY r.id ORDER BY r.name, r.code_version
         """
