@@ -1,0 +1,33 @@
+[project]
+name = "trailcam"
+version = "0.1.0"
+description = "MegaDetector over the wildlife cameras' training bursts"
+requires-python = ">=3.10"
+
+# Deliberately short.  Everything here is needed by the detector pass and
+# nothing is here for a stage that has not been written yet -- the ranking,
+# the gallery and SpeciesNet in design.md will add their own when they
+# arrive (jinja2, opencv, speciesnet).
+#
+# `megadetector` pulls in torch, torchvision and the YOLOv5 fork it needs,
+# which is most of a gigabyte.  Install CPU torch FIRST or pip fetches the
+# CUDA build and spends 2.5 GB on a laptop with no NVIDIA card:
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install torch torchvision \
+#       --index-url https://download.pytorch.org/whl/cpu
+#   .venv/bin/pip install megadetector
+dependencies = [
+    "megadetector",
+    "pillow",
+]
+
+[project.scripts]
+trailcam = "trailcam.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["trailcam"]
