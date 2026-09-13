@@ -29,6 +29,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
+import types
 import unittest
 
 from datetime import datetime
@@ -38,7 +39,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from trailcam import bursts, manifest, report              # noqa: E402
+from trailcam import bursts, detector, manifest, report    # noqa: E402
 from trailcam.detector import Box                          # noqa: E402
 
 
@@ -681,6 +682,79 @@ class Export(unittest.TestCase):
 
         self.assertEqual(
             json.loads(destination.read_text())["info"]["detector"], "MDV5A")
+
+
+class LoadingNewerCheckpoints(unittest.TestCase):
+    """The MDv6 checkpoints name a class the bundled YOLOv5 fork lacks.
+
+    The package patches that itself, but only when the error message says
+    "Can't get attribute", and Python 3.14 says "has no attribute" instead.
+    These pin down our own retry so that a future Python cannot silently
+    take redwood away again.
+    """
+
+    def setUp(self):
+        # A stand-in for the YOLOv5 fork's `models.yolo`, which only exists
+        # on sys.path once the real loader has run.  Ours is there from the
+        # start; what matters is that it has `Model` and no `DetectionModel`.
+        self.yolo = types.ModuleType("models.yolo")
+        self.yolo.Model = object
+        self.models = types.ModuleType("models")
+        self.models.yolo = self.yolo
+        sys.modules["models"] = self.models
+        sys.modules["models.yolo"] = self.yolo
+
+    def tearDown(self):
+        sys.modules.pop("models", None)
+        sys.modules.pop("models.yolo", None)
+
+    def test_the_python_3_14_wording_triggers_the_alias_and_a_retry(self):
+        attempts = []
+
+        def loader(weights, detector_options=None):
+            attempts.append(weights)
+            if len(attempts) == 1:
+                raise AttributeError(
+                    "module 'models.yolo' has no attribute 'DetectionModel'")
+            return "loaded"
+
+        loaded = detector._load_with_newer_yolo_names(
+            loader, "redwood.pt", None)
+
+        self.assertEqual(loaded, "loaded")
+        self.assertEqual(len(attempts), 2)
+        self.assertIs(self.yolo.DetectionModel, self.yolo.Model)
+
+    def test_the_older_wording_is_handled_the_same_way(self):
+        calls = [0]
+
+        def loader(weights, detector_options=None):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise AttributeError(
+                    "Can't get attribute 'DetectionModel' on <module "
+                    "'models.yolo'>")
+            return "loaded"
+
+        self.assertEqual(
+            detector._load_with_newer_yolo_names(loader, "w.pt", None),
+            "loaded")
+
+    def test_a_checkpoint_that_loads_first_time_is_not_touched(self):
+        def loader(weights, detector_options=None):
+            return "loaded"
+
+        self.assertEqual(
+            detector._load_with_newer_yolo_names(loader, "v5a.pt", None),
+            "loaded")
+        self.assertFalse(hasattr(self.yolo, "DetectionModel"))
+
+    def test_any_other_attribute_error_is_not_ours_to_swallow(self):
+        def loader(weights, detector_options=None):
+            raise AttributeError("module 'torch' has no attribute 'frobnicate'")
+
+        with self.assertRaises(AttributeError):
+            detector._load_with_newer_yolo_names(loader, "w.pt", None)
 
 
 if __name__ == "__main__":
