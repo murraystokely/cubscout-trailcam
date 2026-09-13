@@ -230,7 +230,7 @@ def command_bench(options):
             threads=options.threads, min_seconds=options.min_seconds,
             verify=not options.no_verify, mode=options.mode,
             batch_size=options.batch_size, n_cores=options.n_cores,
-            loader_workers=options.loader_workers)
+            loader_workers=options.loader_workers, note=options.note)
         bench_module.save_result(result, options.out)
         return 0
 
@@ -344,6 +344,11 @@ def build_parser():
                        help="keep repeating the corpus until this much time "
                             "has passed, so the machine reaches a steady "
                             "thermal state")
+    bench.add_argument("--note", default=None,
+                       help="anything about the conditions the harness "
+                            "cannot see: 'lid closed', 'other jobs "
+                            "running', 'fans cleaned'. Recorded with the "
+                            "result")
     bench.add_argument("--no-verify", action="store_true",
                        help="skip the corpus checksum (not recommended)")
     bench.add_argument("--mode", choices=("single", "batch"),

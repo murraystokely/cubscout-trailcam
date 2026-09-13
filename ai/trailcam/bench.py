@@ -59,6 +59,16 @@ also records what the model actually found, so two machines can be compared
 on agreement as well as on seconds.  Float arithmetic differs between CPU,
 MPS and CUDA -- the interesting question is whether it differs enough to
 change a verdict, and this is how you find out.
+
+And one rule about what to do with the results, which took a wrong turn
+first: **record every run, with the conditions it ran under.**  A number
+taken on battery is not a number to quote as that machine's throughput, but
+it is still evidence -- it is the only measurement we have of what a
+throttled laptop does, and it came from a real four-hour pass.  Deleting it
+throws away data that was already labelled `on_battery: true` and could
+never have misled anyone who read the row.  So: keep it, mark it, and do
+not quote it.  `--note` is there for whatever the harness cannot detect
+by itself.
 """
 
 import hashlib
@@ -328,14 +338,14 @@ def describe_machine(device=None, threads=None):
 def run_benchmark(corpus_directory, model=None, device=None, threads=None,
                   min_seconds=MIN_SECONDS, max_passes=MAX_PASSES,
                   verify=True, mode="single", batch_size=1, n_cores=1,
-                  loader_workers=0):
+                  loader_workers=0, note=None):
     """Time one model on one device over the corpus.  Returns a result dict."""
     if mode == "batch":
         return _run_batched(corpus_directory, model=model, device=device,
                             threads=threads, min_seconds=min_seconds,
                             max_passes=max_passes, verify=verify,
                             batch_size=batch_size, n_cores=n_cores,
-                            loader_workers=loader_workers)
+                            loader_workers=loader_workers, note=note)
 
     from megadetector.visualization.visualization_utils import load_image
 
@@ -428,6 +438,7 @@ def run_benchmark(corpus_directory, model=None, device=None, threads=None,
         },
         "machine": describe_machine(device=detector.device,
                                     threads=detector.threads),
+        "note": note,
         "timing": {
             "model_load_seconds": round(load_seconds, 2),
             "passes": [round(p, 3) for p in passes],
@@ -439,8 +450,12 @@ def run_benchmark(corpus_directory, model=None, device=None, threads=None,
             "decode_seconds_median": round(statistics.median(decode_times), 4),
             "inference_seconds_median": round(
                 statistics.median(inference_times), 4),
-            # If the last pass is slower than the first, the machine got hot.
-            "throttle_ratio": round(passes[-1] / passes[0], 3),
+            # If the last pass is slower than the first, the machine got
+            # hot.  With only one pass there is nothing to compare, and
+            # reporting 1.00 would claim "no throttling observed" when
+            # nothing was observed at all.
+            "throttle_ratio": (round(passes[-1] / passes[0], 3)
+                               if len(passes) > 1 else None),
         },
         "findings": findings,
         "findings_digest": hashlib.sha256(
@@ -529,7 +544,12 @@ def summarise(paths):
         timing = result["timing"]
         machine = result["machine"]
         mode = result.get("mode", {"name": "single"})
-        battery = " (battery!)" if machine.get("on_battery") else ""
+        flags = []
+        if machine.get("on_battery"):
+            flags.append("battery")
+        if result.get("note"):
+            flags.append(result["note"])
+        battery = f"  [{'; '.join(flags)}]" if flags else ""
 
         shape = mode["name"]
         if mode["name"] == "batch":
@@ -556,13 +576,21 @@ def summarise(paths):
     for result in results:
         by_model.setdefault(result["model"]["name"], []).append(result)
 
+    def describe(result):
+        mode = result.get("mode", {"name": "single"})
+        shape = mode["name"]
+        if mode["name"] == "batch":
+            shape += (f" b{mode['batch_size']}/c{mode['n_cores']}"
+                      f"/l{mode['loader_workers']}")
+        return (f"{result['machine']['host']} on "
+                f"{result['model']['device']}, {shape}")
+
     for model, group in sorted(by_model.items()):
         if len(group) < 2:
             continue
 
         reference = group[0]
-        print(f"\n  {model}, against {reference['machine']['host']} "
-              f"on {reference['model']['device']}:")
+        print(f"\n  {model}, against {describe(reference)}:")
 
         for other in group[1:]:
             same_digest = (other["findings_digest"]
@@ -570,8 +598,7 @@ def summarise(paths):
             differences = _compare_findings(reference["findings"],
                                             other["findings"])
 
-            print(f"    {other['machine']['host']} on "
-                  f"{other['model']['device']}: "
+            print(f"    {describe(other)}: "
                   + ("identical" if same_digest else
                      f"{differences['frames_differing']} of "
                      f"{differences['frames']} frames differ, "
@@ -621,7 +648,7 @@ def _compare_findings(first, second):
 
 def _run_batched(corpus_directory, model=None, device=None, threads=None,
                  min_seconds=MIN_SECONDS, max_passes=MAX_PASSES, verify=True,
-                 batch_size=1, n_cores=1, loader_workers=0):
+                 batch_size=1, n_cores=1, loader_workers=0, note=None):
     """Time the library's batch pipeline instead of our one-at-a-time loop.
 
     Measured differently from single mode, and the difference is worth
@@ -735,6 +762,7 @@ def _run_batched(corpus_directory, model=None, device=None, threads=None,
         },
         "machine": describe_machine(device=str(resolved_device),
                                     threads=threads),
+        "note": note,
         "timing": {
             "model_load_seconds": round(load_seconds, 2),
             "passes": [round(measured, 3)],

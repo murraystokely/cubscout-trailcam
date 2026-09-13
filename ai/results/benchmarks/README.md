@@ -1,7 +1,13 @@
 # Benchmarks
 
-One JSON file per (machine, model, device), plus whatever write-ups the
-numbers earn. `python3 -m trailcam bench report` reads them into a table.
+One JSON file per (machine, model, device, mode), plus whatever write-ups
+the numbers earn. `python3 -m trailcam bench report` reads them into a
+table.
+
+First write-up: [which machine should run the
+pass](../2026-09-13-benchmarking-the-lab.md) --- the Mac Studio is 36x the
+ThinkPad, batching on MPS made it *worse*, and no machine disagreed with
+another about a single verdict.
 
 ## What is being measured, and why that
 
@@ -28,13 +34,31 @@ fixing three different problems:
 | `--loader-workers` | decode in parallel with inference rather than between inferences. Batching fills the device; this stops it starving |
 | `--n-cores` | CPU worker processes. Ignored on a GPU |
 
-Measured on the ThinkPad (8 cores, CPU only, and on battery so treat the
-absolute numbers as indicative): single mode 0.096 s/frame, batch mode
-0.118, and batch with 4 loader workers **0.218** --- two and a half times
-worse. On a CPU-bound machine parallel decode steals cores from inference.
-That is the argument for measuring rather than assuming, and it says
-nothing about what will happen on a GPU, where inference stops being the
-bottleneck and the loaders have idle cores to work with.
+Measured on the ThinkPad (8 cores, CPU only, on battery --- so treat the
+absolute numbers as indicative, and the ratios as the point):
+
+| mode | s/frame |
+|---|---|
+| single | 0.089 |
+| batch, no loaders | 0.094 |
+| batch, 4 loader workers | 0.102 |
+
+So on this machine the library's batch pipeline is slightly *worse* than our
+own loop, and parallel decode is worse again --- about 15%. The direction
+matches the theory: where inference is the bottleneck, decode workers steal
+cores from it. The size says the effect is small.
+
+**An earlier draft of this file claimed 2.5x worse, and that was wrong.**
+It came from a run with `--min-seconds 20`, which did a single pass of 250
+frames and charged the whole process-pool startup to it. Given a proper
+measured window the startup amortises away. The rule that says "measure long
+enough to get hot" caught its own author out inside a day, which is the best
+argument for it this document is going to get.
+
+None of this says anything about a GPU, where inference stops being the
+bottleneck and the loader workers have idle cores to use. That is the
+measurement we cannot make here --- the library forces batch size to 1 on
+CPU --- and it is the reason the flags exist.
 
 Batch mode is reported as its own row, never as a replacement for the
 baseline. Two caveats it carries: the library reloads the model on every
@@ -141,15 +165,39 @@ Copy the JSON files back into this directory, then:
 python3 -m trailcam bench report
 ```
 
-## Before you trust any number
+## What to record, and what to trust
 
-**Plug the laptop in.** Battery changes everything on both macOS and Linux,
-by more than the difference between two models. Every result records
-`on_battery`, the run prints a warning, and `bench report` flags the row ---
-but the fix is to plug it in and run again, not to note it and move on.
+**Record every run, with the conditions it ran under.** That includes the
+bad ones. A result taken on battery is not this machine's throughput and
+must never be quoted as such --- but it is the only measurement we have of
+what a throttled laptop does, and it describes a real four-hour pass that
+actually happened. Every result carries `on_battery`, the run prints a
+warning, `bench report` flags the row, and `--note` takes anything the
+harness cannot see for itself:
+
+```bash
+.venv/bin/python -m trailcam bench run --device cpu \
+    --note "on battery, 60% charge, lid open"
+```
+
+So: keep it, mark it, do not quote it. Deleting a labelled result throws
+away evidence that could not have misled anyone who read the row.
+
+**Plug the laptop in for the number you intend to quote.** Battery changes
+the answer by more than the difference between two models.
 
 **Close everything else.** The benchmark uses every core it is given.
 
 **Run each model on each device you care about**, including `cpu` on the
 fast machines. "How much does the GPU actually buy us" is the question, and
 it needs both halves.
+
+## Where the results live
+
+- **`*.json` in this directory** --- one per (machine, model, device,
+  mode), committed. They are small, they are findings, and they are what
+  `bench report` reads.
+- **A write-up in [`../`](../)** once there is something to say ---
+  `YYYY-MM-DD-something.md`, same convention as every other analysis. A
+  table of numbers is data; which machine should run the nightly pass is a
+  finding, and findings get prose.
