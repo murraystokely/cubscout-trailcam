@@ -19,6 +19,9 @@ different report out.
 import argparse
 import sys
 
+from pathlib import Path
+
+from . import bench as bench_module
 from . import bursts
 from . import config
 from . import detect as detect_module
@@ -210,6 +213,29 @@ def command_status(options):
     return 0
 
 
+def command_bench(options):
+    """Build a corpus, time a machine on it, or read the results back."""
+    if options.what == "build":
+        database = manifest_module.open_manifest()
+        manifest_module.refresh_truth_view(database)
+        bench_module.build_corpus(database, options.corpus,
+                                  size=options.size, seed=options.seed)
+        database.close()
+        return 0
+
+    if options.what == "run":
+        result = bench_module.run_benchmark(
+            options.corpus, model=options.model, device=options.device,
+            threads=options.threads, min_seconds=options.min_seconds,
+            verify=not options.no_verify)
+        bench_module.save_result(result, options.out)
+        return 0
+
+    paths = sorted(Path(options.out).glob("*.json"))
+    bench_module.summarise(paths)
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="trailcam",
@@ -290,6 +316,34 @@ def build_parser():
 
     status = subcommands.add_parser("status", help="how much is done")
     status.set_defaults(function=command_status)
+
+    bench = subcommands.add_parser(
+        "bench", help="time the detector on this machine, comparably")
+    bench.add_argument("what", choices=("build", "run", "report"),
+                       help="build a corpus / time this machine / read "
+                            "the results back")
+    bench.add_argument("--corpus", default=str(config.DATA_DIR / "bench"),
+                       help="the corpus directory (copy it between machines)")
+    bench.add_argument("--out",
+                       default=str(Path(__file__).resolve().parent.parent
+                                   / "results" / "benchmarks"),
+                       help="where result JSON files live")
+    bench.add_argument("--size", type=int, default=250,
+                       help="frames in the corpus (build only)")
+    bench.add_argument("--seed", type=int, default=20260912)
+    bench.add_argument("--model", default=None,
+                       help=f"detector to time (default {config.DETECTOR})")
+    bench.add_argument("--device", default=None,
+                       help="cpu | mps | cuda:0 (default: let torch choose)")
+    bench.add_argument("--threads", type=int, default=None)
+    bench.add_argument("--min-seconds", type=float,
+                       default=bench_module.MIN_SECONDS,
+                       help="keep repeating the corpus until this much time "
+                            "has passed, so the machine reaches a steady "
+                            "thermal state")
+    bench.add_argument("--no-verify", action="store_true",
+                       help="skip the corpus checksum (not recommended)")
+    bench.set_defaults(function=command_bench)
 
     return parser
 

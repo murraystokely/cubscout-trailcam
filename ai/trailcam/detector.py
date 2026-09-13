@@ -143,7 +143,7 @@ class MegaDetector:
     every frame -- never once per frame.
     """
 
-    def __init__(self, model=None, threads=None):
+    def __init__(self, model=None, threads=None, device=None):
         self.name = model or config.DETECTOR
 
         # Torch defaults to every core, which makes the laptop unusable
@@ -163,8 +163,15 @@ class MegaDetector:
         torch.set_num_threads(threads)
 
         self.weights = resolve_weights(self.name)
-        self.model = load_detector(self.weights)
+
+        # Left alone the package picks cuda, then mps, then cpu.  That is
+        # the right default; `device` exists so a benchmark can pin one
+        # machine to each in turn and compare them honestly.
+        options = {"device": device} if device else None
+
+        self.model = load_detector(self.weights, detector_options=options)
         self.threads = threads
+        self.device = str(getattr(self.model, "device", "unknown"))
 
     def detect(self, image_path, minimum_confidence=None):
         """Boxes for one frame, above `minimum_confidence`.
