@@ -26,46 +26,69 @@ from . import manifest as manifest_module
 from .detector import MegaDetector, write_crop
 
 
-def _crop_destination(frame_path, index):
-    """ai/data/crops/<camera>/<day>/train_143015_287_0.jpg
+def _crop_destination(frame_path, index, run_id):
+    """ai/data/crops/run-7/<camera>/<day>/train_143015_287_0.jpg
 
     Mirroring the photo library's own layout means a crop can be traced
-    back to its frame by eye, with no database lookup.
+    back to its frame by eye, with no database lookup.  The run comes
+    first because two models crop the same frame to different boxes, and
+    without it the second would silently overwrite the first.
     """
     frame_path = Path(frame_path)
     # <camera>/<day>/training/train_x.jpg -> <camera>/<day>
     parts = frame_path.parts
     relative_directory = Path(*parts[:-2]) if len(parts) >= 3 else Path()
 
-    return (config.CROP_DIR / relative_directory /
+    return (config.CROP_DIR / f"run-{run_id}" / relative_directory /
             f"{frame_path.stem}_{index}.jpg")
 
 
-def run(camera=None, day=None, limit=None, redo=False, crops=None,
-        model=None, threads=None, quiet=False):
-    """Run the detector over every frame that has not had it yet.
+def run(camera=None, day=None, limit=None, new_run=False, crops=None,
+        model=None, threads=None, quiet=False, retry_errors=False):
+    """Run the detector over every frame this run has not seen yet.
 
     Returns a small summary dictionary.  Safe to call again at any time:
-    finished frames are skipped, so the second call over a finished day
-    does no work at all.
+    frames this run has already done are skipped, so the second call over a
+    finished day does no work at all.
+
+    Runs are per execution.  An interruption leaves the run open and the
+    next call continues it; finishing closes it, so the pass after that
+    starts a fresh run and the two can be compared.
     """
     write_crops = config.WRITE_CROPS if crops is None else crops
+    name = model or config.DETECTOR
 
     database = manifest_module.open_manifest()
-    queue = manifest_module.frames_to_detect(database, camera=camera, day=day,
-                                             limit=limit, redo=redo)
+
+    # The parameters that make two runs of the same model different
+    # answers.  Anything that changes what comes out belongs here, because
+    # this is what a later comparison will be reading.
+    parameters = {
+        "min_confidence": config.MIN_STORED_CONFIDENCE,
+        "crops": bool(write_crops),
+    }
+
+    run_id, resumed = manifest_module.resume_or_start_run(
+        database, "detector", name, params=parameters, force_new=new_run)
+
+    queue = manifest_module.frames_to_detect(
+        database, run_id, camera=camera, day=day, limit=limit,
+        retry_errors=retry_errors)
 
     if not queue:
         if not quiet:
-            print("Nothing to do: every frame in the manifest has been "
-                  "through the detector.")
-            print("(`scan` first if you have synced new bursts; `--redo` to "
-                  "run them all again.)")
-        return {"frames": 0, "animals": 0, "people": 0, "errors": 0}
+            print(f"Nothing to do: run {run_id} ({name}) has seen every "
+                  f"frame in the manifest.")
+            print("(`scan` first if you have synced new bursts; `--new-run` "
+                  "to run them all again as a fresh run.)")
+        manifest_module.finish_run(database, run_id)
+        return {"frames": 0, "animals": 0, "people": 0, "errors": 0,
+                "run": run_id}
 
     if not quiet:
-        print(f"{len(queue)} frames to detect.")
-        print(f"Loading {model or config.DETECTOR} "
+        print(f"{'Resuming' if resumed else 'Starting'} run {run_id}: "
+              f"{name}, {len(queue)} frames to detect.")
+        print(f"Loading {name} "
               f"(first run downloads the weights into {config.MODEL_DIR})...")
 
     started = time.time()
@@ -86,7 +109,8 @@ def run(camera=None, day=None, limit=None, redo=False, crops=None,
 
     previous_handler = signal.signal(signal.SIGINT, on_interrupt)
 
-    summary = {"frames": 0, "animals": 0, "people": 0, "errors": 0}
+    summary = {"frames": 0, "animals": 0, "people": 0, "errors": 0,
+               "run": run_id}
     started = time.time()
 
     try:
@@ -100,16 +124,16 @@ def run(camera=None, day=None, limit=None, redo=False, crops=None,
                 # one photograph is that photograph's problem, and the run
                 # has thousands more to get through.
                 manifest_module.record_detections(
-                    database, row["id"], detector.name, [], error=failure)
+                    database, run_id, row["id"], [], error=failure)
                 summary["errors"] += 1
                 if not quiet:
                     print(f"  ! {row['path']}: {failure}", flush=True)
             else:
                 if write_crops:
-                    boxes = _write_crops_for(absolute, boxes)
+                    boxes = _write_crops_for(absolute, boxes, run_id)
 
                 manifest_module.record_detections(
-                    database, row["id"], detector.name, boxes)
+                    database, run_id, row["id"], boxes)
 
                 summary["animals"] += sum(
                     1 for b in boxes
@@ -132,6 +156,19 @@ def run(camera=None, day=None, limit=None, redo=False, crops=None,
 
         database.commit()
 
+        # Only a run that emptied its queue is finished.  An interrupted
+        # one stays open so the next call picks it up rather than starting
+        # a second run over the same frames.
+        if not interrupted["now"] and summary["frames"] == len(queue) \
+                and not limit:
+            manifest_module.finish_run(database, run_id)
+
+            if manifest_module.reference_run(database) is None:
+                manifest_module.set_reference(database, run_id)
+                if not quiet:
+                    print(f"\nRun {run_id} is now the reference run "
+                          f"(nothing else was).")
+
     finally:
         signal.signal(signal.SIGINT, previous_handler)
         database.commit()
@@ -139,7 +176,8 @@ def run(camera=None, day=None, limit=None, redo=False, crops=None,
 
     if not quiet:
         elapsed = time.time() - started
-        print(f"\n{summary['frames']} frames in {elapsed / 60:.1f} min "
+        print(f"\nRun {run_id}: {summary['frames']} frames in "
+              f"{elapsed / 60:.1f} min "
               f"({elapsed / max(summary['frames'], 1):.2f} s/frame)")
         print(f"  animals (>= {config.ANIMAL_TRUTH}): {summary['animals']}")
         print(f"  people  (>= {config.PERSON_TRUTH}): {summary['people']}")
@@ -150,7 +188,7 @@ def run(camera=None, day=None, limit=None, redo=False, crops=None,
     return summary
 
 
-def _write_crops_for(absolute_path, boxes):
+def _write_crops_for(absolute_path, boxes, run_id):
     """Attach crop paths to the boxes worth cropping.
 
     Animals and the uncertain band only.  People are detected so they can
@@ -164,7 +202,7 @@ def _write_crops_for(absolute_path, boxes):
 
         if box.category == "animal" and box.confidence >= config.EMPTY_TRUTH:
             destination = _crop_destination(absolute_path.relative_to(
-                config.PHOTO_ROOT), index)
+                config.PHOTO_ROOT), index, run_id)
             try:
                 written = write_crop(absolute_path, box, destination)
             except Exception:                       # noqa: BLE001

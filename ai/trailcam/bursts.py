@@ -1,6 +1,6 @@
 """Finding the training bursts on disk, and what the camera thought of them.
 
-Two jobs, and the second one is the interesting half.
+Three jobs, and the last two are the interesting ones.
 
 Walking the directories is easy.  The part that makes E1 worth doing is
 that every training frame also has a row in `measurements-<camera>.csv`
@@ -10,10 +10,18 @@ with what MegaDetector says and you have the thing we could never get
 before: what the camera would have done with frames it was not allowed to
 filter.
 
-So this module reads both and hands back one object per frame.
+The third job is knowing *which* rules those were.  The fleet does not run
+one version of step8 forever -- this archive holds six deployments, and
+wildlifecam4 alone changed three times in three weeks.  The CSV does not
+say which code wrote it, but `d061ae0` stamps a fingerprint of step8's own
+source into every photograph's JSON, so a sighting from the same day
+answers the question.  That fingerprint is what splits the camera's
+decisions into one run per deployment instead of one undifferentiated
+column.
 """
 
 import csv
+import json
 
 from collections import namedtuple
 from datetime import datetime
@@ -26,8 +34,20 @@ from . import config
 # survives the photo library moving or being read on another machine.
 Frame = namedtuple("Frame", [
     "camera", "day", "relative_path", "absolute_path", "captured_at",
-    "camera_decision", "mean_luma", "largest_area",
+    "camera_decision", "mean_luma", "largest_area", "code_version",
+    "metrics",
 ])
+
+
+# Columns of the measurements CSV that are the motion algorithm's own
+# workings.  They are kept as JSON on the result rather than as columns,
+# because E3 sweeps constants and will invent more of them; the three that
+# every query wants (decision, largest_area, mean_luma) are real columns.
+METRIC_FIELDS = (
+    "pixel_threshold", "changed_fraction", "largest_fraction", "extent",
+    "aspect", "blob_range", "blob_edge", "brightness_shift", "confirmations",
+    "exposure_us", "analogue_gain", "ai_class", "ai_confidence",
+)
 
 
 # The decisions in step8 that mean "the rules wanted this photograph",
@@ -103,8 +123,28 @@ def _parse_timestamp(day, filename):
     )
 
 
+def read_code_version(day_directory):
+    """Which step8 was this camera running that day?
+
+    Read from any event JSON in the directory: step8 writes a fingerprint
+    of its own source into every photograph it keeps.  Returns None for a
+    day with no sightings, or one recorded before `d061ae0` added the
+    stamp -- both of which exist in this archive.
+    """
+    for path in sorted(day_directory.glob("*.json")):
+        try:
+            with open(path) as handle:
+                code = json.load(handle).get("code")
+        except (OSError, ValueError):
+            continue
+        if code:
+            return code
+
+    return None
+
+
 def _read_measurements(day_directory):
-    """{filename: (decision, mean_luma, largest_area)} for one camera-day.
+    """{filename: row} for one camera-day.
 
     The CSV is named for the camera's own hostname, which is not always the
     directory the laptop filed it under -- sync_cameras.py lets a camera be
@@ -137,6 +177,8 @@ def _read_measurements(day_directory):
                         (row.get("decision") or "").strip() or None,
                         number("mean_luma"),
                         int(area) if area is not None else None,
+                        {field: row[field] for field in METRIC_FIELDS
+                         if row.get(field) not in (None, "")},
                     )
         except OSError:
             continue
@@ -178,6 +220,7 @@ def find_frames(camera=None, day=None, photo_root=None):
                 continue
 
             measurements = _read_measurements(day_directory)
+            code_version = read_code_version(day_directory)
 
             for image in sorted(training.glob("train_*.jpg")):
                 if image.name.endswith("_annotated.jpg"):
@@ -192,8 +235,8 @@ def find_frames(camera=None, day=None, photo_root=None):
                     # Fall back to the file's own timestamp.
                     captured_at = datetime.fromtimestamp(image.stat().st_mtime)
 
-                decision, mean_luma, largest_area = measurements.get(
-                    image.name, (None, None, None))
+                decision, mean_luma, largest_area, metrics = \
+                    measurements.get(image.name, (None, None, None, None))
 
                 frames.append(Frame(
                     camera=camera_directory.name,
@@ -204,6 +247,8 @@ def find_frames(camera=None, day=None, photo_root=None):
                     camera_decision=decision,
                     mean_luma=mean_luma,
                     largest_area=largest_area,
+                    code_version=code_version,
+                    metrics=metrics,
                 ))
 
     return frames
