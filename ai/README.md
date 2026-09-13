@@ -84,7 +84,7 @@ detector's on the laptop, and each person's.
 
 ```
 sqlite3 data/manifest.sqlite \
-  "SELECT camera_decision, label, COUNT(*) FROM truth GROUP BY 1, 2"
+  "SELECT camera_decision, verdict, COUNT(*) FROM verdicts GROUP BY 1, 2"
 ```
 
 ### The data model
@@ -106,7 +106,7 @@ frame_results   one row per frame per run.  UNIQUE(run_id, frame_id).
 
 detections      one row per box, hanging off a frame_result.
 
-labels          what a person saw.  Reachable by no run.
+annotations     what a person saw.  Reachable by no run.
 ```
 
 Four things follow from that shape, and each is why a table is as it is:
@@ -129,9 +129,16 @@ per deployment, which is how you find out whether a change to the rules
 actually helped.
 
 **Which run counts as ground truth is a policy, not a fact.** One run
-carries `role = 'reference'`; the `truth` view reads it, and
+carries `role = 'reference'`; the `verdicts` view reads it, and
 `trailcam reference <id>` switches it --- one UPDATE, nothing recomputed,
 every other run still there to compare against.
+
+The view is called `verdicts`, not `truth`, on purpose. A view named
+`truth` presents one model's opinion as ground truth in a project whose
+evaluation design says the model is not an oracle; a verdict is what a
+nominated authority currently says, which is the honest description. Same
+reasoning renamed `labels` to `annotations`: in ML a "label" is as often a
+model's output as a person's. Both renames migrate automatically.
 
 ```bash
 .venv/bin/python -m trailcam runs           # every run and its coverage
@@ -242,6 +249,8 @@ moving it somewhere else change the answers?
 ```bash
 .venv/bin/python -m trailcam bench build           # a fixed 250-frame corpus
 .venv/bin/python -m trailcam bench run --device cpu
+.venv/bin/python -m trailcam bench run --device cuda:0 --mode batch \
+    --batch-size 8 --loader-workers 4              # the GPU question
 .venv/bin/python -m trailcam bench report          # every machine, in a table
 ```
 

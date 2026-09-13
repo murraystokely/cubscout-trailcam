@@ -7,12 +7,45 @@ numbers earn. `python3 -m trailcam bench report` reads them into a table.
 
 The pass we actually run: **decode a JPEG from disk, letterbox it, one
 forward pass, non-maximum suppression, one image at a time.** Not
-inference-only, not batched, not synthetic.
+inference-only and not synthetic.
 
 That choice matters. On a fast GPU the JPEG decode is a serious share of
 the total, and a benchmark that skipped it would recommend hardware that
-does not help. If batching later turns out to be worth it, that is a change
-to the pipeline, and the benchmark should change with it --- not before.
+does not help.
+
+### Two modes
+
+`--mode single` (the default) is that one-at-a-time loop --- what
+`detect.py` does today, and the only shape every machine can run, which
+makes it the number they can all be compared on.
+
+`--mode batch` measures the library's batch pipeline instead. Three knobs,
+fixing three different problems:
+
+| flag | what it does |
+|---|---|
+| `--batch-size` | images through the GPU at once. **The library forces this to 1 on CPU**, which is why we never wrote it: the only machine we had was a CPU laptop |
+| `--loader-workers` | decode in parallel with inference rather than between inferences. Batching fills the device; this stops it starving |
+| `--n-cores` | CPU worker processes. Ignored on a GPU |
+
+Measured on the ThinkPad (8 cores, CPU only, and on battery so treat the
+absolute numbers as indicative): single mode 0.096 s/frame, batch mode
+0.118, and batch with 4 loader workers **0.218** --- two and a half times
+worse. On a CPU-bound machine parallel decode steals cores from inference.
+That is the argument for measuring rather than assuming, and it says
+nothing about what will happen on a GPU, where inference stops being the
+bottleneck and the loaders have idle cores to work with.
+
+Batch mode is reported as its own row, never as a replacement for the
+baseline. Two caveats it carries: the library reloads the model on every
+call, so the corpus is repeated *inside* one call and the separately-timed
+model load is subtracted --- an approximation, stated in the result; and
+there are no per-pass times, so **no throttle signal**. Run it twice if you
+need to know whether the machine got hot.
+
+Batching can also change the answers slightly, because images are
+letterboxed to a common size within a batch. That is what the findings
+digest is for.
 
 Four rules, each one there because breaking it is how benchmarks lie:
 

@@ -240,6 +240,90 @@ Jinja gallery.
 
 ---
 
+## Prior art: what already exists, and what we are not using
+
+Added 2026-09-12, after building the eval machinery and then asking whether
+we should have. Short answer: the schema stays, two names changed, and one
+library is worth adopting for one job. The long answer is worth writing
+down, because "should we use a framework for this" will be asked again.
+
+### The camera-trap layer
+
+- **MegaDetector JSON** is the lingua franca. We export it
+  (`trailcam export`), and [Timelapse](https://saul.cpsc.ucalgary.ca/timelapse/)
+  and Camelot ingest it directly. Keep doing that.
+- **[Camtrap DP](https://docs.gbif.org/camera-trap-guide/en/)** is the data
+  exchange standard (Biodiversity Information Standards, GBIF-supported):
+  `deployments`, `media`, `observations`. Worth knowing that their
+  *deployment* --- one camera at one location over a period --- is a close
+  cousin of our camera runs. It is an interchange format with no analytical
+  tooling, so it is an export target if we ever publish, not internal
+  storage.
+- **Platforms** --- Wildlife Insights, TrapTagger, Agouti, Camelot,
+  AddaxAI/EcoAssist --- do management plus AI identification;
+  [camtrapR](https://cran.r-project.org/package=camtrapR) does the ecology.
+  The [2023 platform review in *Methods in Ecology and
+  Evolution*](https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.14044)
+  found none covers the whole workflow, which is broadly why everyone ends
+  up writing glue.
+- **[Everything I know about ML and camera traps](https://agentmorris.github.io/camera-trap-ml-survey/)**
+  --- by MegaDetector's maintainer, and the reading list to start from.
+
+### Experiment tracking
+
+MLflow, Weights & Biases, Neptune, Aim, DVC. Their "run with parameters,
+metrics and artifacts" is exactly our `runs` table --- we landed on MLflow's
+vocabulary by accident, which suggests the shape is right.
+
+**Not adopting one**, for a specific reason rather than taste: they are
+built for training experiments and would hold per-frame predictions as
+opaque artifacts. Our central question --- join each model's verdict on a
+frame against what the camera in the woods decided about that same frame ---
+is a relational query over 5,000 rows. A tracker adds a service and does not
+answer it.
+
+If that ever changes, **try W&B first**: Murray has used it before, and
+familiarity beats a feature comparison when nothing else separates them.
+
+### Detection evaluation
+
+This is where we are furthest from convention, deliberately. The standard
+tools --- `pycocotools`, `torchmetrics.MeanAveragePrecision` --- compute
+box-level mAP at IoU thresholds. **We compute frame-level verdicts and no
+IoU matching at all**, because our question is "did the camera photograph
+the animal", not "how well does the box fit". If box quality ever matters,
+use those libraries rather than writing mAP ourselves.
+
+**[FiftyOne](https://docs.voxel51.com/)** is the one thing worth adopting.
+It is a dataset of samples with multiple label fields per sample --- one per
+model, which is our runs --- plus `evaluate_detections()` and a GUI for
+flipping through disagreements. That last part is exactly what E1's
+hand-labelling step and `compare`'s "worst disagreements" list want. Use it
+as a **viewer over exported MegaDetector JSON**, not as the system of
+record: it brings MongoDB, and moving the manifest into it would cost the
+relational join that is the whole point.
+
+### Naming
+
+`runs` matches MLflow; `detections` is standard; `frames` is clear (the
+domain would say `media`). Two were renamed on 2026-09-12 while there was
+exactly one manifest in existence:
+
+- `truth` -> **`verdicts`**. A view named `truth` presented one model's
+  opinion as ground truth, in a project whose evaluation design says in as
+  many words that MegaDetector is not an oracle. Six months on, nobody
+  remembers the caveat; they remember the column name.
+- `labels` -> **`annotations`**. In machine learning a "label" is as often
+  the model's own output as a person's; annotation says unambiguously that
+  a human wrote it.
+
+### The benchmark
+
+The rules in `bench.py` --- warm up and discard, measure long enough to
+reach a steady thermal state, report every pass, fix the corpus and check it
+by hash --- are essentially **MLPerf Inference**'s methodology. Worth naming
+so they read as the standard approach rather than house style.
+
 ## Open questions to revisit next session
 - Region for the species geofence (Murray's TZ is US Pacific --- confirm exact
   area).

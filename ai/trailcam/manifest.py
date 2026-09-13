@@ -41,7 +41,7 @@ import subprocess
 from . import config
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 SCHEMA = """
@@ -152,10 +152,17 @@ CREATE INDEX IF NOT EXISTS detections_result ON detections(frame_result_id);
 -- What a person saw.  Its own table, reachable by no run, so "a rerun
 -- cannot destroy human work" is structural rather than remembered.
 --
+-- Called `annotations` rather than `labels` because in machine learning a
+-- "label" is just as often the model's own class output; annotation means
+-- unambiguously that a human wrote it.  (The camera-trap data standard,
+-- Camtrap DP, calls these `observations` -- worth knowing if we ever
+-- publish, but observation implies an animal was seen, and most of ours
+-- will say "empty".)
+--
 -- Several rows per frame are allowed on purpose: two Scouts disagreeing
 -- about the same picture is data, not a constraint violation.  The view
 -- below takes the most recent.
-CREATE TABLE IF NOT EXISTS labels (
+CREATE TABLE IF NOT EXISTS annotations (
     id           INTEGER PRIMARY KEY,
     frame_id     INTEGER NOT NULL REFERENCES frames(id) ON DELETE CASCADE,
     label        TEXT NOT NULL,
@@ -164,22 +171,30 @@ CREATE TABLE IF NOT EXISTS labels (
     notes        TEXT
 );
 
-CREATE INDEX IF NOT EXISTS labels_frame ON labels(frame_id);
+CREATE INDEX IF NOT EXISTS annotations_frame
+    ON annotations(frame_id);
 
-CREATE VIEW IF NOT EXISTS latest_label AS
-SELECT l.* FROM labels l
-JOIN (SELECT frame_id, MAX(id) AS id FROM labels GROUP BY frame_id) newest
-  ON newest.id = l.id;
+CREATE VIEW IF NOT EXISTS latest_annotation AS
+SELECT a.* FROM annotations a
+JOIN (SELECT frame_id, MAX(id) AS id FROM annotations GROUP BY frame_id)
+     newest ON newest.id = a.id;
 
 -- The confidence split, as a view rather than a column, because it is a
 -- question about thresholds and thresholds change.  Re-reading the view
 -- after editing config.py costs nothing; re-labelling 5,000 rows does not.
 --
--- Two joins do the work.  `reference` is whichever run currently counts as
--- ground truth.  The camera join needs no role: each frame belongs to
+-- It is called `verdicts`, and NOT `truth`, which is what it was called
+-- first.  `evaluation-design.md` says in as many words that MegaDetector
+-- is not an oracle -- and then a view named `truth` presents one model's
+-- opinion as exactly that.  Six months from now nobody would remember the
+-- caveat; they would remember the column name.  A verdict is what a
+-- nominated authority currently says, which is the honest description.
+--
+-- Two joins do the work.  `reference` is whichever run currently holds
+-- that authority.  The camera join needs no role: each frame belongs to
 -- exactly one camera run -- the deployment that recorded it -- so joining
 -- on kind alone picks out that frame's own baseline.
-CREATE VIEW IF NOT EXISTS truth AS
+CREATE VIEW IF NOT EXISTS verdicts AS
 SELECT
     f.id AS frame_id, f.camera, f.day, f.path, f.captured_at, f.mean_luma,
 
@@ -192,7 +207,7 @@ SELECT
     reference_result.max_animal_conf AS max_animal_conf,
     reference_result.max_person_conf AS max_person_conf,
 
-    human.label AS hand_label,
+    human.label AS annotation,
 
     CASE
         WHEN human.label IS NOT NULL                     THEN human.label
@@ -209,10 +224,10 @@ SELECT
                   OR reference_result.max_person_conf < {empty_truth})
                                                          THEN 'empty'
         ELSE 'uncertain'
-    END AS label,
+    END AS verdict,
 
-    CASE WHEN human.label IS NOT NULL THEN 'hand' ELSE 'auto' END
-        AS label_source
+    CASE WHEN human.label IS NOT NULL THEN 'human' ELSE 'model' END
+        AS verdict_source
 
 FROM frames f
 LEFT JOIN runs reference          ON reference.role = 'reference'
@@ -223,7 +238,7 @@ LEFT JOIN frame_results camera_result
        ON camera_result.frame_id = f.id
       AND camera_result.run_id IN (SELECT id FROM runs WHERE kind = 'camera')
 LEFT JOIN runs camera_run         ON camera_run.id = camera_result.run_id
-LEFT JOIN latest_label human      ON human.frame_id = f.id;
+LEFT JOIN latest_annotation human ON human.frame_id = f.id;
 """
 
 
@@ -260,15 +275,15 @@ def open_manifest(path=None):
     return database
 
 
-def refresh_truth_view(database):
+def refresh_verdicts(database):
     """Rebuild the views from the current config.
 
     Call this after editing thresholds in config.py.  The stored view text
     is a snapshot of the numbers as they were when it was created, and
     SQLite will happily keep using yesterday's.
     """
-    database.execute("DROP VIEW IF EXISTS truth")
-    database.execute("DROP VIEW IF EXISTS latest_label")
+    database.execute("DROP VIEW IF EXISTS verdicts")
+    database.execute("DROP VIEW IF EXISTS latest_annotation")
     database.executescript(_formatted_schema())
     database.commit()
 
@@ -282,8 +297,31 @@ def _tables(database):
         "SELECT name FROM sqlite_master WHERE type='table'")}
 
 
+def _migrate_names(database):
+    """Version 2 called them `labels` and `truth`.  Both names were wrong.
+
+    `truth` presented one model's opinion as ground truth in a project
+    whose design document says the model is not an oracle, and `label` is
+    used in machine learning for a model's own output as often as for a
+    person's.  Renamed while there was exactly one manifest in the world;
+    doing it later would mean everyone with a database doing it too.
+    """
+    tables = _tables(database)
+
+    if "labels" in tables and "annotations" not in tables:
+        print("Renaming labels -> annotations, truth -> verdicts...")
+        database.execute("DROP VIEW IF EXISTS truth")
+        database.execute("DROP VIEW IF EXISTS latest_label")
+        database.execute("DROP INDEX IF EXISTS labels_frame")
+        database.execute("ALTER TABLE labels RENAME TO annotations")
+        database.execute("DELETE FROM schema_version")
+        database.execute("INSERT INTO schema_version VALUES (?)",
+                         (SCHEMA_VERSION,))
+        database.commit()
+
+
 def migrate(database):
-    """Bring a version 1 manifest up to the runs/frame_results shape.
+    """Bring an older manifest up to the current shape.
 
     Version 1 put one model's answers in columns on `frames`.  The detector
     results are hours of CPU time and are moved across intact.  The camera's
@@ -294,6 +332,7 @@ def migrate(database):
     tables = _tables(database)
 
     if "frames" not in tables or "runs" in tables:
+        _migrate_names(database)
         return                                  # new database, or already v2
 
     columns = {row[1] for row in database.execute("PRAGMA table_info(frames)")}
@@ -306,7 +345,9 @@ def migrate(database):
     # and SQLite refuses to rename a table while a view points at one that
     # no longer exists.  The full schema recreates them at the end.
     database.execute("DROP VIEW IF EXISTS truth")
+    database.execute("DROP VIEW IF EXISTS verdicts")
     database.execute("DROP VIEW IF EXISTS latest_label")
+    database.execute("DROP VIEW IF EXISTS latest_annotation")
 
     # Only the new tables, by hand.  The full schema script cannot run yet:
     # it wants to index `detections.frame_result_id`, and at this point
@@ -326,7 +367,7 @@ def migrate(database):
             n_animal INTEGER, n_person INTEGER, n_vehicle INTEGER,
             max_animal_conf REAL, max_person_conf REAL, metrics TEXT,
             UNIQUE (run_id, frame_id));
-        CREATE TABLE IF NOT EXISTS labels (
+        CREATE TABLE IF NOT EXISTS annotations (
             id INTEGER PRIMARY KEY, frame_id INTEGER NOT NULL,
             label TEXT NOT NULL, who TEXT, labelled_at TEXT NOT NULL,
             notes TEXT);
@@ -374,12 +415,12 @@ def migrate(database):
             "SELECT id, hand_label, hand_labelled_at FROM frames "
             "WHERE hand_label IS NOT NULL").fetchall():
         database.execute(
-            "INSERT INTO labels (frame_id, label, who, labelled_at) "
+            "INSERT INTO annotations (frame_id, label, who, labelled_at) "
             "VALUES (?, ?, 'migrated', ?)",
             (row["id"], row["hand_label"], row["hand_labelled_at"]))
 
-    # The first detector run becomes the reference, so the truth view has
-    # something to read.  `trailcam reference` changes it.
+    # The first detector run becomes the reference, so the verdicts view
+    # has something to read.  `trailcam reference` changes it.
     if run_for:
         database.execute("UPDATE runs SET role = 'reference' WHERE id = ?",
                          (min(run_for.values()),))
@@ -697,10 +738,10 @@ def record_detections(database, run_id, frame_id, boxes, error=None):
           b.crop_path) for b in boxes])
 
 
-def add_label(database, frame_id, label, who=None, notes=None):
-    """Record what a person saw.  Never overwrites an earlier verdict."""
+def add_annotation(database, frame_id, label, who=None, notes=None):
+    """Record what a person saw.  Never overwrites an earlier one."""
     database.execute(
-        """INSERT INTO labels (frame_id, label, who, labelled_at, notes)
+        """INSERT INTO annotations (frame_id, label, who, labelled_at, notes)
            VALUES (?, ?, ?, datetime('now'), ?)""",
         (frame_id, label, who or os.environ.get("USER"), notes))
     database.commit()
