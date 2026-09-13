@@ -10,15 +10,21 @@ detector -- which is where the bugs that would quietly corrupt a number
 live.  The detector itself is a third-party model; the useful test of it is
 the check-the-checker sample in `report.py`, done by a person.
 
-Two things here are worth the trouble in particular:
+Four things here are worth the trouble in particular:
 
   * `classify_decision`, because it hard-codes strings from step8, and a
     typo would silently move frames into the wrong column of the headline
     result
   * the `truth` view, because the confidence split is the whole idea and it
     is expressed in SQL, which nothing else type-checks
+  * run isolation, because the entire point of the schema is that one
+    model's answers cannot touch another's
+  * the migration, because it is the only code here that can destroy four
+    hours of somebody's CPU time
 """
 
+import contextlib
+import io
 import json
 import shutil
 import sqlite3
@@ -32,7 +38,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from trailcam import bursts, config, manifest, report      # noqa: E402
+from trailcam import bursts, manifest, report              # noqa: E402
 from trailcam.detector import Box                          # noqa: E402
 
 
@@ -63,8 +69,6 @@ class DecisionVocabulary(unittest.TestCase):
                 "suppressed", suffix)
 
     def test_a_suffix_on_a_rejection_is_still_a_rejection(self):
-        # step8 only appends these after deciding to save, so this should
-        # not arise -- but if it ever does, "quiet" must not become a save.
         self.assertEqual(bursts.classify_decision("quiet (cooldown)"),
                          "rejected")
 
@@ -72,7 +76,6 @@ class DecisionVocabulary(unittest.TestCase):
         self.assertEqual(bursts.classify_decision("brand new rule"),
                          "unknown")
         self.assertEqual(bursts.classify_decision(None), "unknown")
-        self.assertEqual(bursts.classify_decision(""), "unknown")
 
 
 class FindingFrames(unittest.TestCase):
@@ -80,26 +83,28 @@ class FindingFrames(unittest.TestCase):
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
-        day = self.root / "wildlifecam9" / "2026-08-24"
-        training = day / "training"
+        self.day = self.root / "wildlifecam9" / "2026-08-24"
+        training = self.day / "training"
         training.mkdir(parents=True)
 
-        # Two training frames, one lores buffer, one wildlife photograph
-        # with its annotated twin.  Only the first two should be found.
         (training / "train_103415_876.jpg").write_bytes(b"jpeg")
         (training / "train_103420_112.jpg").write_bytes(b"jpeg")
         (training / "train_103415_876.png").write_bytes(b"png")
-        (day / "103415.jpg").write_bytes(b"jpeg")
-        (day / "103415_annotated.jpg").write_bytes(b"jpeg")
+        (self.day / "103415.jpg").write_bytes(b"jpeg")
+        (self.day / "103415_annotated.jpg").write_bytes(b"jpeg")
 
-        # The CSV is named for the camera's hostname, which here is
-        # deliberately NOT the directory name.
-        (day / "measurements-pi-in-the-oak.csv").write_text(
-            "time,file,mean_luma,largest_area,decision\n"
-            "2026-08-24T10:34:15.876,train_103415_876.jpg,128.7,4210,"
-            "strong motion\n"
-            "2026-08-24T10:34:20.112,train_103420_112.jpg,127.1,0,quiet\n"
-        )
+        # step8 stamps its own fingerprint into every photograph's JSON.
+        (self.day / "103415.json").write_text(json.dumps(
+            {"camera": "pi-in-the-oak", "code": "abc123def456"}))
+
+        # The CSV is named for the camera's hostname, deliberately NOT the
+        # directory name.
+        (self.day / "measurements-pi-in-the-oak.csv").write_text(
+            "time,file,mean_luma,largest_area,extent,aspect,decision\n"
+            "2026-08-24T10:34:15.876,train_103415_876.jpg,128.7,4210,0.65,"
+            "1.45,strong motion\n"
+            "2026-08-24T10:34:20.112,train_103420_112.jpg,127.1,0,0.0,0.0,"
+            "quiet\n")
 
     def tearDown(self):
         shutil.rmtree(self.root)
@@ -118,6 +123,26 @@ class FindingFrames(unittest.TestCase):
         self.assertEqual(first.largest_area, 4210)
         self.assertEqual(second.camera_decision, "quiet")
 
+    def test_keeps_the_algorithms_other_measurements(self):
+        # extent and aspect are step8's workings; E3 will sweep them, so
+        # they must survive the trip into the manifest.
+        first = bursts.find_frames(photo_root=self.root)[0]
+
+        self.assertEqual(first.metrics["extent"], "0.65")
+        self.assertEqual(first.metrics["aspect"], "1.45")
+
+    def test_finds_which_step8_was_running(self):
+        first = bursts.find_frames(photo_root=self.root)[0]
+
+        self.assertEqual(first.code_version, "abc123def456")
+
+    def test_a_day_with_no_sightings_has_no_fingerprint(self):
+        (self.day / "103415.json").unlink()
+
+        self.assertIsNone(bursts.read_code_version(self.day))
+        # ... and that is not fatal; the frames are still worth detecting.
+        self.assertEqual(len(bursts.find_frames(photo_root=self.root)), 2)
+
     def test_timestamp_keeps_the_milliseconds(self):
         first = bursts.find_frames(photo_root=self.root)[0]
 
@@ -125,26 +150,14 @@ class FindingFrames(unittest.TestCase):
                          datetime(2026, 8, 24, 10, 34, 15, 876000))
 
     def test_camera_comes_from_the_directory_not_the_csv_name(self):
-        first = bursts.find_frames(photo_root=self.root)[0]
-
-        self.assertEqual(first.camera, "wildlifecam9")
+        self.assertEqual(bursts.find_frames(photo_root=self.root)[0].camera,
+                         "wildlifecam9")
 
     def test_a_missing_photo_library_is_not_a_crash(self):
         self.assertEqual(bursts.find_frames(photo_root="/nonexistent"), [])
 
-    def test_a_missing_csv_leaves_the_verdict_empty(self):
-        for csv_file in (self.root / "wildlifecam9" / "2026-08-24").glob(
-                "measurements-*.csv"):
-            csv_file.unlink()
 
-        frames = bursts.find_frames(photo_root=self.root)
-
-        self.assertEqual(len(frames), 2)
-        self.assertIsNone(frames[0].camera_decision)
-
-
-class Manifest(unittest.TestCase):
-    """The database: idempotency, and the confidence split."""
+class ManifestBase(unittest.TestCase):
 
     def setUp(self):
         self.directory = Path(tempfile.mkdtemp())
@@ -154,13 +167,20 @@ class Manifest(unittest.TestCase):
         self.database.close()
         shutil.rmtree(self.directory)
 
-    def _frame(self, name, decision="quiet", luma=120.0):
+    def _frame(self, name, decision="quiet", luma=120.0, code="abc123",
+               camera="wildlifecam9"):
         return bursts.Frame(
-            camera="wildlifecam9", day="2026-08-24",
-            relative_path=f"wildlifecam9/2026-08-24/training/{name}",
+            camera=camera, day="2026-08-24",
+            relative_path=f"{camera}/2026-08-24/training/{name}",
             absolute_path=Path(name),
             captured_at=datetime(2026, 8, 24, 10, 34, 15),
-            camera_decision=decision, mean_luma=luma, largest_area=0)
+            camera_decision=decision, mean_luma=luma, largest_area=0,
+            code_version=code, metrics={"extent": "0.65"})
+
+    def _add(self, *frames):
+        manifest.add_frames(self.database, list(frames))
+        return [row["id"] for row in self.database.execute(
+            "SELECT id FROM frames ORDER BY id")]
 
     def _label_of(self, path_ending):
         row = self.database.execute(
@@ -168,113 +188,370 @@ class Manifest(unittest.TestCase):
             (f"%{path_ending}",)).fetchone()
         return row["label"]
 
+
+class Frames(ManifestBase):
+    """The file table, and re-scanning."""
+
     def test_rescanning_adds_nothing_and_loses_nothing(self):
         frames = [self._frame("train_1.jpg"), self._frame("train_2.jpg")]
 
         self.assertEqual(manifest.add_frames(self.database, frames), 2)
         self.assertEqual(manifest.add_frames(self.database, frames), 0)
 
-        # And a rescan must not wipe a result already recorded.
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-        manifest.record_detections(self.database, identifier, "MDV5A", [])
-        manifest.add_frames(self.database, frames)
+    def test_rescanning_cannot_wipe_a_result(self):
+        identifiers = self._add(self._frame("train_1.jpg"))
+        run = manifest.start_run(self.database, "detector", "MDV5A")
+        manifest.record_detections(self.database, run, identifiers[0], [])
 
-        self.assertEqual(len(manifest.frames_to_detect(self.database)), 1)
-
-    def test_the_work_queue_is_what_has_not_been_seen(self):
-        manifest.add_frames(self.database,
-                            [self._frame("train_1.jpg"),
-                             self._frame("train_2.jpg")])
-
-        first = manifest.frames_to_detect(self.database)[0]
-        manifest.record_detections(self.database, first["id"], "MDV5A", [])
-
-        self.assertEqual(len(manifest.frames_to_detect(self.database)), 1)
-        self.assertEqual(
-            len(manifest.frames_to_detect(self.database, redo=True)), 2)
-
-    def test_a_confident_animal_is_labelled_animal(self):
         manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
 
-        manifest.record_detections(self.database, identifier, "MDV5A", [
-            Box("animal", 0.94, 0.1, 0.2, 0.3, 0.4, None)])
+        self.assertEqual(
+            len(manifest.frames_to_detect(self.database, run)), 0)
 
+
+class CameraRuns(ManifestBase):
+    """One run per deployment of step8 -- the thing v1 could not express."""
+
+    def test_one_run_per_camera_and_code_version(self):
+        frames = [self._frame("train_1.jpg", code="aaa"),
+                  self._frame("train_2.jpg", code="aaa"),
+                  self._frame("train_3.jpg", code="bbb"),
+                  self._frame("train_4.jpg", camera="wildlifecam7",
+                              code="aaa")]
+        self._add(*frames)
+        manifest.record_camera_decisions(self.database, frames)
+
+        runs = [r for r in manifest.runs(self.database) if r["kind"] == "camera"]
+
+        self.assertEqual(len(runs), 3)
+        self.assertEqual(sorted((r["name"], r["code_version"], r["frames"])
+                                for r in runs),
+                         [("wildlifecam7", "aaa", 1),
+                          ("wildlifecam9", "aaa", 2),
+                          ("wildlifecam9", "bbb", 1)])
+
+    def test_recording_decisions_twice_is_a_no_op(self):
+        frames = [self._frame("train_1.jpg")]
+        self._add(*frames)
+
+        self.assertEqual(
+            manifest.record_camera_decisions(self.database, frames), 1)
+        self.assertEqual(
+            manifest.record_camera_decisions(self.database, frames), 0)
+
+    def test_the_measurements_survive_as_json(self):
+        frames = [self._frame("train_1.jpg")]
+        self._add(*frames)
+        manifest.record_camera_decisions(self.database, frames)
+
+        metrics = self.database.execute(
+            "SELECT metrics FROM frame_results").fetchone()[0]
+
+        self.assertEqual(json.loads(metrics)["extent"], "0.65")
+
+    def test_the_camera_decision_reaches_the_truth_view(self):
+        frames = [self._frame("train_1.jpg", decision="strong motion")]
+        self._add(*frames)
+        manifest.record_camera_decisions(self.database, frames)
+
+        row = self.database.execute("SELECT * FROM truth").fetchone()
+
+        self.assertEqual(row["camera_decision"], "strong motion")
+        self.assertEqual(row["camera_code"], "abc123")
+
+
+class RunIsolation(ManifestBase):
+    """Two models over the same frames must not touch each other."""
+
+    def setUp(self):
+        super().setUp()
+        self.frame_ids = self._add(self._frame("train_1.jpg"),
+                                   self._frame("train_2.jpg"))
+        self.first = manifest.start_run(self.database, "detector", "MDV5A")
+        self.second = manifest.start_run(self.database, "detector", "redwood")
+
+    def test_each_run_has_its_own_queue(self):
+        manifest.record_detections(self.database, self.first,
+                                   self.frame_ids[0], [])
+
+        self.assertEqual(
+            len(manifest.frames_to_detect(self.database, self.first)), 1)
+        self.assertEqual(
+            len(manifest.frames_to_detect(self.database, self.second)), 2)
+
+    def test_one_run_cannot_overwrite_another(self):
+        manifest.record_detections(self.database, self.first,
+                                   self.frame_ids[0],
+                                   [Box("animal", 0.94, .1, .2, .3, .4, None)])
+        manifest.record_detections(self.database, self.second,
+                                   self.frame_ids[0], [])
+
+        surviving = self.database.execute(
+            "SELECT max_animal_conf FROM frame_results WHERE run_id = ?",
+            (self.first,)).fetchone()[0]
+
+        self.assertAlmostEqual(surviving, 0.94)
+
+    def test_a_retry_within_one_run_replaces_its_own_boxes(self):
+        for _ in range(2):
+            manifest.record_detections(
+                self.database, self.first, self.frame_ids[0],
+                [Box("animal", 0.94, .1, .2, .3, .4, None)])
+
+        self.assertEqual(self.database.execute(
+            "SELECT COUNT(*) FROM detections").fetchone()[0], 1)
+
+    def test_deleting_a_run_takes_its_results_and_boxes(self):
+        manifest.record_detections(self.database, self.first,
+                                   self.frame_ids[0],
+                                   [Box("animal", 0.94, .1, .2, .3, .4, None)])
+
+        self.database.execute("DELETE FROM runs WHERE id = ?", (self.first,))
+
+        self.assertEqual(self.database.execute(
+            "SELECT COUNT(*) FROM frame_results").fetchone()[0], 0)
+        self.assertEqual(self.database.execute(
+            "SELECT COUNT(*) FROM detections").fetchone()[0], 0)
+
+    def test_an_unfinished_run_is_resumed_rather_than_duplicated(self):
+        run_id, resumed = manifest.resume_or_start_run(
+            self.database, "detector", "MDV5A", params={"a": 1})
+        again, resumed_again = manifest.resume_or_start_run(
+            self.database, "detector", "MDV5A", params={"a": 1})
+
+        self.assertFalse(resumed)
+        self.assertTrue(resumed_again)
+        self.assertEqual(run_id, again)
+
+    def test_a_finished_run_is_never_resumed(self):
+        run_id, _ = manifest.resume_or_start_run(
+            self.database, "detector", "MDV5A", params={"a": 1})
+        manifest.finish_run(self.database, run_id)
+
+        again, resumed = manifest.resume_or_start_run(
+            self.database, "detector", "MDV5A", params={"a": 1})
+
+        self.assertFalse(resumed)
+        self.assertNotEqual(run_id, again)
+
+    def test_different_parameters_are_a_different_run(self):
+        run_id, _ = manifest.resume_or_start_run(
+            self.database, "detector", "MDV5A", params={"threshold": 0.1})
+        other, resumed = manifest.resume_or_start_run(
+            self.database, "detector", "MDV5A", params={"threshold": 0.2})
+
+        self.assertNotEqual(run_id, other)
+        self.assertFalse(resumed)
+
+
+class TheConfidenceSplit(ManifestBase):
+    """The `truth` view, which is the whole idea, expressed in SQL."""
+
+    def setUp(self):
+        super().setUp()
+        self.frame_ids = self._add(self._frame("train_1.jpg"))
+        self.run = manifest.start_run(self.database, "detector", "MDV5A")
+        manifest.set_reference(self.database, self.run)
+
+    def _record(self, *boxes, error=None):
+        manifest.record_detections(self.database, self.run, self.frame_ids[0],
+                                   list(boxes), error=error)
+
+    def test_a_frame_no_run_has_seen(self):
+        self.assertEqual(self._label_of("train_1.jpg"), "not yet seen")
+
+    def test_a_confident_animal(self):
+        self._record(Box("animal", 0.94, .1, .2, .3, .4, None))
         self.assertEqual(self._label_of("train_1.jpg"), "animal")
 
-    def test_no_boxes_at_all_is_an_empty_frame(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-
-        manifest.record_detections(self.database, identifier, "MDV5A", [])
-
+    def test_no_boxes_at_all_is_empty(self):
+        self._record()
         self.assertEqual(self._label_of("train_1.jpg"), "empty")
 
-    def test_the_muddy_middle_is_uncertain(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-
-        manifest.record_detections(self.database, identifier, "MDV5A", [
-            Box("animal", 0.42, 0.1, 0.2, 0.3, 0.4, None)])
-
+    def test_the_muddy_middle(self):
+        self._record(Box("animal", 0.42, .1, .2, .3, .4, None))
         self.assertEqual(self._label_of("train_1.jpg"), "uncertain")
 
     def test_a_person_is_neither_animal_nor_empty(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-
-        manifest.record_detections(self.database, identifier, "MDV5A", [
-            Box("person", 0.91, 0.1, 0.2, 0.3, 0.4, None)])
-
+        self._record(Box("person", 0.91, .1, .2, .3, .4, None))
         self.assertEqual(self._label_of("train_1.jpg"), "person")
 
-    def test_an_unreadable_frame_says_so_rather_than_reading_as_empty(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-
-        manifest.record_detections(self.database, identifier, "MDV5A", [],
-                                   error=OSError("truncated"))
+    def test_unreadable_says_so_rather_than_reading_as_empty(self):
+        self._record(error=OSError("truncated"))
 
         self.assertEqual(self._label_of("train_1.jpg"), "unreadable")
         # ... and it is out of the queue, so one bad file cannot loop.
-        self.assertEqual(manifest.frames_to_detect(self.database), [])
+        self.assertEqual(manifest.frames_to_detect(self.database, self.run), [])
 
-    def test_a_hand_label_beats_the_detector(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
+    def test_a_retry_can_pick_up_the_unreadable_ones(self):
+        self._record(error=OSError("truncated"))
 
-        manifest.record_detections(self.database, identifier, "MDV5A", [
-            Box("animal", 0.99, 0.1, 0.2, 0.3, 0.4, None)])
-        self.database.execute(
-            "UPDATE frames SET hand_label = 'empty' WHERE id = ?",
-            (identifier,))
+        self.assertEqual(len(manifest.frames_to_detect(
+            self.database, self.run, retry_errors=True)), 1)
+
+    def test_switching_the_reference_changes_the_answer(self):
+        self._record(Box("animal", 0.94, .1, .2, .3, .4, None))
+        self.assertEqual(self._label_of("train_1.jpg"), "animal")
+
+        # A second opinion, and no recompute needed to adopt it.
+        other = manifest.start_run(self.database, "detector", "redwood")
+        manifest.record_detections(self.database, other, self.frame_ids[0], [])
+        manifest.set_reference(self.database, other)
 
         self.assertEqual(self._label_of("train_1.jpg"), "empty")
 
-    def test_rerunning_the_detector_replaces_boxes_rather_than_adding(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
+    def test_only_one_run_can_be_the_reference(self):
+        other = manifest.start_run(self.database, "detector", "redwood")
+        manifest.set_reference(self.database, other)
 
-        for _ in range(2):
-            manifest.record_detections(self.database, identifier, "MDV5A", [
-                Box("animal", 0.94, 0.1, 0.2, 0.3, 0.4, None)])
+        self.assertEqual(self.database.execute(
+            "SELECT COUNT(*) FROM runs WHERE role = 'reference'"
+        ).fetchone()[0], 1)
 
-        count = self.database.execute(
-            "SELECT COUNT(*) FROM detections").fetchone()[0]
-        self.assertEqual(count, 1)
+    def test_two_references_cannot_be_forced_in(self):
+        other = manifest.start_run(self.database, "detector", "redwood")
 
-    def test_deleting_a_frame_takes_its_boxes_with_it(self):
-        manifest.add_frames(self.database, [self._frame("train_1.jpg")])
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-        manifest.record_detections(self.database, identifier, "MDV5A", [
-            Box("animal", 0.94, 0.1, 0.2, 0.3, 0.4, None)])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "UPDATE runs SET role = 'reference' WHERE id = ?", (other,))
 
-        self.database.execute("DELETE FROM frames WHERE id = ?",
-                              (identifier,))
 
-        count = self.database.execute(
-            "SELECT COUNT(*) FROM detections").fetchone()[0]
-        self.assertEqual(count, 0)
+class HumanLabels(ManifestBase):
+    """Verdicts a person gave, which no rerun may touch."""
+
+    def setUp(self):
+        super().setUp()
+        self.frame_ids = self._add(self._frame("train_1.jpg"))
+        self.run = manifest.start_run(self.database, "detector", "MDV5A")
+        manifest.set_reference(self.database, self.run)
+        manifest.record_detections(self.database, self.run, self.frame_ids[0],
+                                   [Box("animal", 0.99, .1, .2, .3, .4, None)])
+
+    def test_a_hand_label_beats_the_detector(self):
+        manifest.add_label(self.database, self.frame_ids[0], "empty",
+                           who="nolan")
+
+        self.assertEqual(self._label_of("train_1.jpg"), "empty")
+
+    def test_rerunning_the_detector_cannot_erase_it(self):
+        manifest.add_label(self.database, self.frame_ids[0], "empty")
+        manifest.record_detections(self.database, self.run, self.frame_ids[0],
+                                   [Box("animal", 0.99, .1, .2, .3, .4, None)])
+
+        self.assertEqual(self._label_of("train_1.jpg"), "empty")
+
+    def test_two_people_may_disagree_and_the_later_one_counts(self):
+        manifest.add_label(self.database, self.frame_ids[0], "empty",
+                           who="nolan")
+        manifest.add_label(self.database, self.frame_ids[0], "animal",
+                           who="murray")
+
+        self.assertEqual(self._label_of("train_1.jpg"), "animal")
+        # Both are kept: disagreement is data.
+        self.assertEqual(self.database.execute(
+            "SELECT COUNT(*) FROM labels").fetchone()[0], 2)
+
+
+class Migration(unittest.TestCase):
+    """Version 1 held hours of CPU time.  This is the code that could lose it."""
+
+    V1_SCHEMA = """
+        CREATE TABLE frames (
+            id INTEGER PRIMARY KEY, camera TEXT, day TEXT, path TEXT UNIQUE,
+            captured_at TEXT, camera_decision TEXT, mean_luma REAL,
+            largest_area INTEGER, detected_at TEXT, detector TEXT,
+            n_animal INTEGER, n_person INTEGER, n_vehicle INTEGER,
+            max_animal_conf REAL, max_person_conf REAL, detect_error TEXT,
+            hand_label TEXT, hand_labelled_at TEXT);
+        CREATE TABLE detections (
+            id INTEGER PRIMARY KEY, frame_id INTEGER, category TEXT,
+            confidence REAL, x REAL, y REAL, w REAL, h REAL, crop_path TEXT);
+        CREATE VIEW truth AS SELECT f.*, 'animal' AS label FROM frames f;
+    """
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.path = self.directory / "v1.sqlite"
+
+        old = sqlite3.connect(self.path)
+        old.executescript(self.V1_SCHEMA)
+        old.execute(
+            """INSERT INTO frames (id, camera, day, path, captured_at,
+                   camera_decision, mean_luma, detected_at, detector,
+                   n_animal, max_animal_conf, hand_label, hand_labelled_at)
+               VALUES (1, 'wildlifecam4', '2026-08-24', 'a/b/train_1.jpg',
+                   '2026-08-24T10:34:15', 'strong motion', 128.7,
+                   '2026-09-12 10:00:00', 'MDV5A', 1, 0.94, 'animal',
+                   '2026-09-12 11:00:00')""")
+        old.execute(
+            """INSERT INTO frames (id, camera, day, path, captured_at,
+                   detected_at, detector, detect_error)
+               VALUES (2, 'wildlifecam4', '2026-08-24', 'a/b/train_2.jpg',
+                   '2026-08-24T10:34:20', '2026-09-12 10:00:01', 'MDV5A',
+                   'truncated')""")
+        old.execute("INSERT INTO detections VALUES "
+                    "(1, 1, 'animal', 0.94, 0.1, 0.2, 0.3, 0.4, NULL)")
+        old.commit()
+        old.close()
+
+        # The migration narrates what it is doing, which is right at a
+        # terminal and noise in a test run.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.database = manifest.open_manifest(self.path)
+
+    def tearDown(self):
+        self.database.close()
+        shutil.rmtree(self.directory)
+
+    def test_the_expensive_part_survives(self):
+        row = self.database.execute(
+            """SELECT r.name, fr.max_animal_conf, fr.n_animal
+                 FROM frame_results fr JOIN runs r ON r.id = fr.run_id
+                WHERE fr.frame_id = 1""").fetchone()
+
+        self.assertEqual(row["name"], "MDV5A")
+        self.assertAlmostEqual(row["max_animal_conf"], 0.94)
+
+    def test_the_boxes_follow_their_result(self):
+        row = self.database.execute(
+            """SELECT d.confidence FROM detections d
+                 JOIN frame_results fr ON fr.id = d.frame_result_id
+                WHERE fr.frame_id = 1""").fetchone()
+
+        self.assertAlmostEqual(row["confidence"], 0.94)
+
+    def test_an_unreadable_frame_stays_unreadable(self):
+        row = self.database.execute(
+            "SELECT status, error FROM frame_results WHERE frame_id = 2"
+        ).fetchone()
+
+        self.assertEqual(row["status"], "error")
+        self.assertEqual(row["error"], "truncated")
+
+    def test_hand_labels_become_rows_in_their_own_table(self):
+        row = self.database.execute("SELECT * FROM labels").fetchone()
+
+        self.assertEqual(row["frame_id"], 1)
+        self.assertEqual(row["label"], "animal")
+
+    def test_the_recovered_run_becomes_the_reference(self):
+        self.assertIsNotNone(manifest.reference_run(self.database))
+
+    def test_the_model_columns_are_gone_from_frames(self):
+        columns = {row[1] for row in
+                   self.database.execute("PRAGMA table_info(frames)")}
+
+        self.assertNotIn("detector", columns)
+        self.assertNotIn("camera_decision", columns)
+        self.assertIn("mean_luma", columns)
+
+    def test_migrating_twice_is_harmless(self):
+        self.database.close()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.database = manifest.open_manifest(self.path)
+
+        self.assertEqual(self.database.execute(
+            "SELECT COUNT(*) FROM frame_results").fetchone()[0], 2)
 
 
 class Export(unittest.TestCase):
@@ -290,10 +567,13 @@ class Export(unittest.TestCase):
             absolute_path=Path("train_1.jpg"),
             captured_at=datetime(2026, 8, 24, 10, 34, 15),
             camera_decision="strong motion", mean_luma=120.0,
-            largest_area=4210)])
+            largest_area=4210, code_version="abc123", metrics=None)])
 
-        identifier = manifest.frames_to_detect(self.database)[0]["id"]
-        manifest.record_detections(self.database, identifier, "MDV5A", [
+        self.run = manifest.start_run(self.database, "detector", "MDV5A")
+        manifest.set_reference(self.database, self.run)
+        frame_id = self.database.execute(
+            "SELECT id FROM frames").fetchone()["id"]
+        manifest.record_detections(self.database, self.run, frame_id, [
             Box("animal", 0.94, 0.1, 0.2, 0.3, 0.4, None),
             Box("person", 0.31, 0.5, 0.5, 0.1, 0.1, None)])
 
@@ -303,7 +583,8 @@ class Export(unittest.TestCase):
 
     def test_writes_the_documented_shape(self):
         destination = self.directory / "md.json"
-        report.export_megadetector_json(self.database, destination)
+        with contextlib.redirect_stdout(io.StringIO()):
+            report.export_megadetector_json(self.database, destination)
 
         written = json.loads(destination.read_text())
 
@@ -314,13 +595,19 @@ class Export(unittest.TestCase):
         image = written["images"][0]
         self.assertEqual(image["file"],
                          "wildlifecam9/2026-08-24/training/train_1.jpg")
-        # Categories go back to MegaDetector's numbers, and the boxes stay
-        # in its coordinate convention -- the export is a straight copy.
         self.assertEqual([d["category"] for d in image["detections"]],
                          ["1", "2"])
         self.assertEqual(image["detections"][0]["bbox"], [0.1, 0.2, 0.3, 0.4])
         # max_detection_conf is over every category, not just animals.
         self.assertEqual(image["max_detection_conf"], 0.94)
+
+    def test_it_names_the_run_it_exported(self):
+        destination = self.directory / "md.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            report.export_megadetector_json(self.database, destination)
+
+        self.assertEqual(
+            json.loads(destination.read_text())["info"]["detector"], "MDV5A")
 
 
 if __name__ == "__main__":

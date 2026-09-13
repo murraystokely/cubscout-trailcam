@@ -78,15 +78,74 @@ it resumes. Leave it overnight, or narrow it with `--camera` / `--day` /
 
 ## What comes out
 
-One SQLite database, `ai/data/manifest.sqlite`, with a row per training
-frame holding **both** verdicts side by side: what MegaDetector saw, and
-what the camera in the woods decided about that very frame. That pairing is
-the thing this project has never had, and it is what E2 replays against.
+One SQLite database, `ai/data/manifest.sqlite`, holding every verdict
+anything has reached about every frame --- the camera's in the woods, each
+detector's on the laptop, and each person's.
 
 ```
 sqlite3 data/manifest.sqlite \
   "SELECT camera_decision, label, COUNT(*) FROM truth GROUP BY 1, 2"
 ```
+
+### The data model
+
+Five tables, and the split between the first two is the whole design:
+
+```
+frames          one row per file.  Nothing any algorithm decided --
+                camera, day, path, when it was taken, how bright it is.
+
+runs            one row per thing-that-looked-at-frames, per execution:
+                  camera    what step8 decided in the woods, one run per
+                            (camera, code version)
+                  detector  a pass of MegaDetector on the laptop
+                  replay    E2/E3: motion.py offline at some thresholds
+                with its parameters, weights, host, and when it ran.
+
+frame_results   one row per frame per run.  UNIQUE(run_id, frame_id).
+
+detections      one row per box, hanging off a frame_result.
+
+labels          what a person saw.  Reachable by no run.
+```
+
+Four things follow from that shape, and each is why a table is as it is:
+
+**A run's queue is the frames it has no row for.** Resume is rerun, per
+run, so two models can be part-finished at once and neither disturbs the
+other. `--new-run` starts a fresh one instead of continuing.
+
+**"We looked and found nothing" is a `frame_results` row with no
+detections; "we have not looked" is no row at all.** In one table those are
+indistinguishable, and confusing them turns unprocessed frames into
+confident empties --- which is exactly the bug that would silently wreck a
+recall number.
+
+**The camera is a run too.** Not a flourish: this archive holds **six
+deployments**, and wildlifecam4 alone ran three different versions of step8
+in three weeks. A single `camera_decision` column would average three
+algorithms together and never say so. `report` breaks the comparison down
+per deployment, which is how you find out whether a change to the rules
+actually helped.
+
+**Which run counts as ground truth is a policy, not a fact.** One run
+carries `role = 'reference'`; the `truth` view reads it, and
+`trailcam reference <id>` switches it --- one UPDATE, nothing recomputed,
+every other run still there to compare against.
+
+```bash
+.venv/bin/python -m trailcam runs           # every run and its coverage
+.venv/bin/python -m trailcam reference 3    # adopt run 3 as ground truth
+.venv/bin/python -m trailcam compare 1 3    # where two runs disagree
+```
+
+`compare` is milestone E4 in one command. Run it on MDv5a against the fast
+v6 variant and the Cheerios story below comes straight back out as a
+table: 117 frames seen by both, 34.2% agreement.
+
+An older single-model manifest is migrated automatically on first open ---
+detector results move across intact, and the camera's decisions are rebuilt
+by the next `scan`, which is where the version fingerprints come from.
 
 `report` prints the same thing in a readable form, in four parts:
 

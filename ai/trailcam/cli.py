@@ -4,6 +4,9 @@
     python3 -m trailcam detect --limit 50     # try it on fifty frames
     python3 -m trailcam detect                # the real pass, hours long
     python3 -m trailcam report                # what it found
+    python3 -m trailcam runs                  # every run, and its coverage
+    python3 -m trailcam reference 3           # which run counts as truth
+    python3 -m trailcam compare 1 3           # where two runs disagree
     python3 -m trailcam sample --size 200     # frames to label by eye
     python3 -m trailcam label <path> animal   # record what you saw
     python3 -m trailcam export md.json        # for Timelapse
@@ -35,11 +38,26 @@ def command_scan(options):
 
     database = manifest_module.open_manifest()
     added = manifest_module.add_frames(database, frames)
+    decisions = manifest_module.record_camera_decisions(database, frames)
 
     without_csv = sum(1 for f in frames if f.camera_decision is None)
 
     print(f"{len(frames)} training frames on disk, {added} new to the "
           f"manifest.")
+
+    if decisions:
+        print(f"  {decisions} camera decisions recorded.")
+
+    # One run per (camera, step8 version).  Showing them here is how you
+    # notice that a camera was reflashed mid-campaign.
+    deployments = [r for r in manifest_module.runs(database)
+                   if r["kind"] == "camera"]
+    if deployments:
+        print(f"  {len(deployments)} deployment(s) of step8 in this archive:")
+        for row in deployments:
+            print(f"    run {row['id']:3d}  {row['name']:14s} "
+                  f"{row['code_version'] or 'unfingerprinted':14s} "
+                  f"{row['frames']:6d} frames")
 
     if without_csv:
         # Worth flagging loudly: a frame with no CSV row is a frame we
@@ -56,8 +74,8 @@ def command_detect(options):
     """The pass itself."""
     summary = detect_module.run(
         camera=options.camera, day=options.day, limit=options.limit,
-        redo=options.redo, crops=options.crops, model=options.model,
-        threads=options.threads)
+        new_run=options.new_run, crops=options.crops, model=options.model,
+        threads=options.threads, retry_errors=options.retry_errors)
 
     # Nothing to do is a success.  Every frame failing is not.
     return 1 if summary["frames"] and summary["errors"] == summary["frames"] \
@@ -109,11 +127,7 @@ def command_label(options):
             print(f"  {row['path']}")
         return 1
 
-    database.execute(
-        "UPDATE frames SET hand_label = ?, hand_labelled_at = "
-        "datetime('now') WHERE id = ?",
-        (options.label, rows[0]["id"]))
-    database.commit()
+    manifest_module.add_label(database, rows[0]["id"], options.label)
 
     print(f"{rows[0]['path']}: {options.label}")
     database.close()
@@ -123,7 +137,68 @@ def command_label(options):
 def command_export(options):
     database = manifest_module.open_manifest()
     report_module.export_megadetector_json(database, options.destination,
-                                           camera=options.camera)
+                                           camera=options.camera,
+                                           run_id=options.run)
+    database.close()
+    return 0
+
+
+def command_runs(options):
+    """Every run in the manifest, and how much of the archive it covers."""
+    database = manifest_module.open_manifest()
+    rows = manifest_module.runs(database)
+
+    if not rows:
+        print("No runs yet. `scan` records the camera's own decisions; "
+              "`detect` adds a detector.")
+        return 0
+
+    total = manifest_module.counts(database)["frames"] or 0
+
+    for row in rows:
+        mark = "*" if row["role"] == "reference" else " "
+        print(f"{mark} {row['id']:3d}  {row['kind']:8s} {row['name']:16s} "
+              f"{row['code_version'] or '':14s} "
+              f"{row['frames']:6d}/{total} frames  "
+              f"{'open' if row['finished_at'] is None else 'done'}")
+        if row["params"]:
+            print(f"      params: {row['params']}")
+        if row["errors"]:
+            print(f"      {row['errors']} frames it could not read")
+
+    print("\n* = reference run (what `truth` reads). "
+          "Change it with `reference <id>`.")
+    database.close()
+    return 0
+
+
+def command_reference(options):
+    """Choose which run counts as ground truth."""
+    database = manifest_module.open_manifest()
+
+    row = database.execute("SELECT * FROM runs WHERE id = ?",
+                           (options.run,)).fetchone()
+    if row is None:
+        print(f"No run {options.run}. `trailcam runs` lists them.")
+        return 1
+
+    if row["kind"] == "camera":
+        # Not forbidden -- but grading the camera against itself scores
+        # 100% and means nothing, so say so.
+        print("Careful: that is a camera run. Making it the reference means "
+              "grading the camera against its own decisions.")
+
+    manifest_module.set_reference(database, options.run)
+    print(f"Run {row['id']} ({row['name']}) is now the reference.")
+    print("Nothing was recomputed; `report` will read it from here on.")
+    database.close()
+    return 0
+
+
+def command_compare(options):
+    database = manifest_module.open_manifest()
+    manifest_module.refresh_truth_view(database)
+    report_module.compare(database, options.run_a, options.run_b)
     database.close()
     return 0
 
@@ -157,8 +232,11 @@ def build_parser():
         "detect", help="run MegaDetector over every frame not yet seen"))
     detect.add_argument("--limit", type=int,
                         help="stop after this many frames (try 50 first)")
-    detect.add_argument("--redo", action="store_true",
-                        help="run frames that already have results again")
+    detect.add_argument("--new-run", action="store_true",
+                        help="start a fresh run rather than continuing an "
+                             "unfinished one with the same settings")
+    detect.add_argument("--retry-errors", action="store_true",
+                        help="also re-try frames this run could not read")
     detect.add_argument("--model", default=None,
                         help=f"detector name (default {config.DETECTOR})")
     detect.add_argument("--threads", type=int, default=None,
@@ -191,7 +269,24 @@ def build_parser():
         "export", help="write MegaDetector-format JSON (for Timelapse)")
     export.add_argument("destination")
     export.add_argument("--camera")
+    export.add_argument("--run", type=int, default=None,
+                        help="which run to export (default: the reference)")
     export.set_defaults(function=command_export)
+
+    runs = subcommands.add_parser(
+        "runs", help="every run in the manifest and its coverage")
+    runs.set_defaults(function=command_runs)
+
+    reference = subcommands.add_parser(
+        "reference", help="choose which run counts as ground truth")
+    reference.add_argument("run", type=int)
+    reference.set_defaults(function=command_reference)
+
+    compare = subcommands.add_parser(
+        "compare", help="where two runs disagree")
+    compare.add_argument("run_a", type=int)
+    compare.add_argument("run_b", type=int)
+    compare.set_defaults(function=command_compare)
 
     status = subcommands.add_parser("status", help="how much is done")
     status.set_defaults(function=command_status)

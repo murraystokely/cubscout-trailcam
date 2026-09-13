@@ -35,44 +35,41 @@ def _bar(count, total, width=28):
 
 
 def coverage(database):
-    """Question 1: how much has been done."""
+    """Question 1: what is in the manifest, and what has looked at it."""
     totals = manifest_module.counts(database)
 
     print("Frames in the manifest")
     print("----------------------")
     print(f"  training frames   {totals['frames'] or 0}")
-    print(f"  through detector  {totals['detected'] or 0}")
-    print(f"  unreadable        {totals['errors'] or 0}")
     print(f"  cameras           {totals['cameras'] or 0}")
     print(f"  days              {totals['days'] or 0}  "
           f"({totals['first_day']} .. {totals['last_day']})")
 
-    rows = database.execute(
-        """
-        SELECT camera,
-               COUNT(*) AS frames,
-               SUM(detected_at IS NOT NULL) AS detected,
-               COUNT(DISTINCT detector) AS detectors
-          FROM frames GROUP BY camera ORDER BY camera
-        """
-    ).fetchall()
+    print("\nRuns")
+    print("----")
 
-    if len(rows) > 1:
-        print()
-        for row in rows:
-            print(f"  {row['camera']:16s} {row['detected'] or 0:6d}"
-                  f" / {row['frames']:6d}")
+    rows = manifest_module.runs(database)
+    if not rows:
+        print("  none yet -- `scan` records the camera's own decisions, "
+              "`detect` adds a detector.")
+        return
 
-    detectors = database.execute(
-        "SELECT detector, COUNT(*) AS n FROM frames "
-        "WHERE detector IS NOT NULL GROUP BY detector"
-    ).fetchall()
+    total_frames = totals["frames"] or 0
+    for row in rows:
+        mark = " *" if row["role"] == "reference" else "  "
+        state = "open" if row["finished_at"] is None else "done"
+        version = f" {row['code_version']}" if row["code_version"] else ""
+        print(f"{mark}{row['id']:3d}  {row['kind']:8s} {row['name']:16s}"
+              f"{version:14s} {row['frames']:6d}/{total_frames}  {state}"
+              + (f"  {row['errors']} errors" if row["errors"] else ""))
 
-    if len(detectors) > 1:
-        print("\n  Careful: more than one detector in this manifest --")
-        for row in detectors:
-            print(f"    {row['detector']}: {row['n']} frames")
-        print("  Rerun with --redo to put them all on the same footing.")
+    print("\n  * = the reference run: the one `truth` reads, and the one")
+    print("      every label below comes from.  `trailcam reference <id>`")
+    print("      changes it -- one UPDATE, no recompute.")
+
+    if manifest_module.reference_run(database) is None:
+        print("\n  No reference run is set, so nothing can be labelled. "
+              "Pick one with `trailcam reference <id>`.")
 
 
 def split(database):
@@ -138,7 +135,7 @@ def against_the_camera(database):
                COALESCE(camera_decision, '(no CSV row)') AS decision,
                COUNT(*) AS n
           FROM truth
-         WHERE detected_at IS NOT NULL
+         WHERE status IS NOT NULL
          GROUP BY label, decision
         """
     ).fetchall()
@@ -219,7 +216,7 @@ def by_light(database):
                label,
                COUNT(*) AS n
           FROM truth
-         WHERE detected_at IS NOT NULL
+         WHERE status IS NOT NULL
          GROUP BY light, label
          ORDER BY light, n DESC
         """
@@ -248,7 +245,7 @@ def check_the_checker(database, sample_size=200, seed=None):
         """
         SELECT path, label, max_animal_conf, camera_decision, mean_luma
           FROM truth
-         WHERE detected_at IS NOT NULL AND hand_label IS NULL
+         WHERE status IS NOT NULL AND hand_label IS NULL
         """
     ).fetchall()
 
@@ -297,7 +294,8 @@ def uncertain_queue(database, limit=50):
     return [row["path"] for row in rows]
 
 
-def export_megadetector_json(database, destination, camera=None):
+def export_megadetector_json(database, destination, camera=None,
+                             run_id=None):
     """Write results in MegaDetector's own JSON format.
 
     Worth the twenty lines because it is the lingua franca of camera-trap
@@ -307,15 +305,23 @@ def export_megadetector_json(database, destination, camera=None):
     """
     import json
 
-    where = "WHERE detected_at IS NOT NULL AND detect_error IS NULL"
-    arguments = []
+    run = (database.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+           .fetchone() if run_id else manifest_module.reference_run(database))
+
+    if run is None:
+        print("No run to export: pass a run id, or set a reference run.")
+        return None
+
+    arguments = [run["id"]]
+    where = "WHERE r.run_id = ? AND r.status = 'ok'"
     if camera:
-        where += " AND camera = ?"
+        where += " AND f.camera = ?"
         arguments.append(camera)
 
     frames = database.execute(
-        f"SELECT id, path FROM frames {where} "
-        "ORDER BY camera, day, captured_at", arguments).fetchall()
+        f"""SELECT f.id, f.path, r.id AS result_id FROM frames f
+            JOIN frame_results r ON r.frame_id = f.id {where}
+            ORDER BY f.camera, f.day, f.captured_at""", arguments).fetchall()
 
     number_for = {name: number for number, name
                   in enumerate(("animal", "person", "vehicle"), start=1)}
@@ -324,8 +330,8 @@ def export_megadetector_json(database, destination, camera=None):
     for frame in frames:
         boxes = database.execute(
             "SELECT category, confidence, x, y, w, h FROM detections "
-            "WHERE frame_id = ? ORDER BY confidence DESC",
-            (frame["id"],)).fetchall()
+            "WHERE frame_result_id = ? ORDER BY confidence DESC",
+            (frame["result_id"],)).fetchall()
 
         images.append({
             "file": frame["path"],
@@ -346,7 +352,7 @@ def export_megadetector_json(database, destination, camera=None):
         "detection_categories": {"1": "animal", "2": "person",
                                  "3": "vehicle"},
         "info": {
-            "detector": config.DETECTOR,
+            "detector": run["name"],
             "detection_completion_time": None,
             "format_version": "1.3",
             "photo_root": str(config.PHOTO_ROOT),
@@ -360,9 +366,151 @@ def export_megadetector_json(database, destination, camera=None):
     return destination
 
 
+def by_deployment(database):
+    """Question 5, which only the runs schema can ask: did a change help?
+
+    Each camera run is one version of step8 on one camera.  Comparing them
+    is the difference between "our false-positive rate is 1.7%" and "it was
+    4% until the shadow rule landed on 26 August".  The first is a number;
+    the second is a reason to keep working.
+
+    Read the columns as rates only where the frame count is large enough to
+    carry one --- a deployment with forty frames in it is telling you
+    nothing.
+    """
+    print("\nBy deployment (one row per version of step8 in the woods)")
+    print("--------------------------------------------------------")
+
+    rows = database.execute(
+        """
+        SELECT r.name AS camera, r.code_version, r.id AS run_id,
+               COUNT(*) AS frames,
+               SUM(t.label = 'animal') AS animals,
+               SUM(t.camera_decision IS NOT NULL) AS decided
+          FROM runs r
+          JOIN frame_results fr ON fr.run_id = r.id
+          JOIN truth t ON t.frame_id = fr.frame_id
+         WHERE r.kind = 'camera'
+         GROUP BY r.id ORDER BY r.name, r.code_version
+        """
+    ).fetchall()
+
+    if not rows:
+        print("  no camera runs yet -- `scan` builds them from the CSVs")
+        return
+
+    for row in rows:
+        wanted = database.execute(
+            """SELECT decision, COUNT(*) n FROM frame_results
+                WHERE run_id = ? AND decision IS NOT NULL
+             GROUP BY decision""", (row["run_id"],)).fetchall()
+
+        kept = sum(r["n"] for r in wanted
+                   if bursts.classify_decision(r["decision"]) == "wanted")
+        limited = sum(r["n"] for r in wanted
+                      if bursts.classify_decision(r["decision"]) == "suppressed")
+
+        print(f"\n  run {row['run_id']:3d}  {row['camera']:14s} "
+              f"{row['code_version'] or 'unfingerprinted'}")
+        print(f"       {row['frames']:6d} frames, "
+              f"{row['animals'] or 0} with an animal in them")
+        print(f"       photographed {kept}, rate-limited {limited}")
+
+
+def compare(database, run_a, run_b):
+    """Two runs over the same frames: where do they disagree?
+
+    This is milestone E4 ("Rivals") in one query, and it is the reason the
+    schema has a runs table at all.  Before, comparing two models meant
+    copying the database aside and diffing two files by hand.
+    """
+    def describe(run_id):
+        row = database.execute("SELECT * FROM runs WHERE id = ?",
+                               (run_id,)).fetchone()
+        if row is None:
+            raise SystemExit(f"No run {run_id}. `trailcam runs` lists them.")
+        return row
+
+    first, second = describe(run_a), describe(run_b)
+
+    print(f"Run {first['id']} ({first['name']}) "
+          f"against run {second['id']} ({second['name']})")
+    print("-" * 62)
+
+    # Both runs' verdicts for every frame they have both seen, bucketed by
+    # the same thresholds the confidence split uses.
+    verdict = f"""
+        CASE WHEN {{}}.status <> 'ok' THEN 'error'
+             WHEN {{}}.max_animal_conf >= {config.ANIMAL_TRUTH} THEN 'animal'
+             WHEN {{}}.max_person_conf >= {config.PERSON_TRUTH} THEN 'person'
+             WHEN {{}}.max_animal_conf < {config.EMPTY_TRUTH} THEN 'empty'
+             ELSE 'uncertain' END
+    """
+
+    rows = database.execute(
+        f"""
+        SELECT {verdict.format('a', 'a', 'a', 'a')} AS verdict_a,
+               {verdict.format('b', 'b', 'b', 'b')} AS verdict_b,
+               COUNT(*) AS n
+          FROM frame_results a
+          JOIN frame_results b ON b.frame_id = a.frame_id AND b.run_id = ?
+         WHERE a.run_id = ?
+         GROUP BY verdict_a, verdict_b
+        """, (second["id"], first["id"])).fetchall()
+
+    if not rows:
+        print("  no frames in common")
+        return
+
+    total = sum(row["n"] for row in rows)
+    agreed = sum(row["n"] for row in rows
+                 if row["verdict_a"] == row["verdict_b"])
+
+    print(f"\n  {total} frames seen by both, "
+          f"{agreed} agreed ({100.0 * agreed / total:.1f}%)\n")
+
+    labels = sorted({row["verdict_a"] for row in rows}
+                    | {row["verdict_b"] for row in rows})
+    counts = {(row["verdict_a"], row["verdict_b"]): row["n"] for row in rows}
+
+    header = "".join(f"{label:>11s}" for label in labels)
+    print(f"  {'run ' + str(first['id']):>12s} \\ run {second['id']}")
+    print(f"  {'':12s}{header}")
+    for a in labels:
+        cells = "".join(f"{counts.get((a, b), 0):11d}" for b in labels)
+        print(f"  {a:>12s}{cells}")
+
+    print("\n  Rows are run {}, columns run {}. Off the diagonal is where "
+          "they\n  disagree, and those frames are the ones worth looking at "
+          "by eye.".format(first["id"], second["id"]))
+
+    disagreements = database.execute(
+        f"""
+        SELECT f.path,
+               a.max_animal_conf AS conf_a, b.max_animal_conf AS conf_b
+          FROM frame_results a
+          JOIN frame_results b ON b.frame_id = a.frame_id AND b.run_id = ?
+          JOIN frames f ON f.id = a.frame_id
+         WHERE a.run_id = ?
+           AND {verdict.format('a', 'a', 'a', 'a')}
+            <> {verdict.format('b', 'b', 'b', 'b')}
+         ORDER BY ABS(COALESCE(a.max_animal_conf, 0)
+                    - COALESCE(b.max_animal_conf, 0)) DESC
+         LIMIT 10
+        """, (second["id"], first["id"])).fetchall()
+
+    if disagreements:
+        print(f"\n  Worst disagreements:")
+        for row in disagreements:
+            print(f"    {row['path']}  "
+                  f"{first['id']}: {row['conf_a'] or 0:.2f}  "
+                  f"{second['id']}: {row['conf_b'] or 0:.2f}")
+
+
 def everything(database):
     """The whole report, in the order the questions get asked."""
     coverage(database)
     split(database)
     against_the_camera(database)
     by_light(database)
+    by_deployment(database)
