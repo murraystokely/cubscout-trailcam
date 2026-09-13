@@ -174,6 +174,14 @@ Writes MegaDetector's own JSON format, which
 camera-trap review application --- ingests directly. Worth knowing about
 before writing any labelling UI of our own.
 
+## Results
+
+Measured findings go in [`results/`](results/), one file per analysis, named
+by date. The first one --- [what the pass found on 12 September
+2026](results/2026-09-12-first-megadetector-pass.md) --- covers 5,459 frames
+across three cameras, and is where the Cheerios story above is written down
+properly.
+
 ## Layout
 
 ```
@@ -186,6 +194,7 @@ ai/
     detect.py      the pass: resumable, interruptible, one frame at a time
     report.py      the confidence split and the comparison
     cli.py         scan | detect | report | sample | label | export | status
+  results/         measured findings, one file per analysis, by date
   models/          downloaded weights            (gitignored)
   data/            manifest.sqlite, crops/       (gitignored)
 ```
