@@ -56,9 +56,15 @@ MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
 # and MDV5A at roughly a tenth of that (a few hours -- an overnight job).
 # Spruce is a fine way to get a first answer in ten minutes.  It is not the
 # one to quote: on this archive it calls the pile of cereal put out for the
-# crows an animal, at 0.86, in frame after frame (see ai/README.md).
-# Whether MDV5A makes the same mistake is not yet known -- that comparison
-# is the first thing to run when its weights finish downloading.
+# crows an animal, at 0.86, in frame after frame, where MDV5A finds nothing
+# at all (ai/results/2026-09-12-first-megadetector-pass.md).
+#
+# What that does NOT show is that v5 beats v6.  Spruce is the smallest and
+# fastest of the v6 family; md1000-redwood is the flagship, and at 268 MB
+# and speed 1.0 it costs exactly what MDV5A costs to run.  It has never
+# been tried here, and the published comparisons tend to put it ahead of
+# v5a.  So the default below is convention, not evidence -- and settling it
+# is precisely milestone E4, "Rivals", in ../evaluation-design.md.
 #
 # Switching is one word here, and the manifest records per frame which
 # detector saw it, so a mixed database stays honest -- `report` says so
