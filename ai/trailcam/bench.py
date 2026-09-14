@@ -133,6 +133,7 @@ def build_corpus(database, destination, size=250, seed=20260912):
         """SELECT f.id, f.path, f.camera, f.mean_luma, v.verdict AS label
              FROM frames f JOIN verdicts v ON v.frame_id = f.id
             WHERE v.verdict NOT IN ('not yet seen', 'unreadable')
+              AND f.kind = 'training'
             ORDER BY f.path"""
     ).fetchall()
 

@@ -162,6 +162,40 @@ CROP_MIN_PIXELS = 48
 
 
 # ------------------------------------------------------------
+# The shortlist  (design.md, "Best-photo ranking")
+# ------------------------------------------------------------
+#
+# Which of the animal pictures are worth a person's time?  Four cheap
+# signals, multiplied together, no model.  Every constant here is a first
+# guess written down so it can be argued with, not a measurement.
+
+# An animal covering this fraction of the frame is as big as we need;
+# above it size stops helping.  A crow at five metres is about 2%; a deer
+# at ten is about 8%.
+SUBJECT_FULL_AREA = 0.05
+
+# A box within this fraction of any frame edge is probably cut off, and a
+# picture of half an animal is worth this much of a whole one.
+EDGE_MARGIN = 0.01
+CLIPPED_PENALTY = 0.6
+
+# Sharpness is the variance of the Laplacian over the animal box.  Rather
+# than pick an absolute number for a quantity that depends on the lens and
+# the light, the median over the candidates counts as "sharp enough", and
+# a crop blurrier than that is marked down in proportion, to a floor.
+SHARPNESS_FLOOR = 0.3
+
+# Two animal frames from the same camera closer together than this are the
+# same visit, and only the best of a visit makes the list.  step8 saves at
+# most one photograph a second and cools down for two, so a visit is many
+# frames; a minute of quiet is a new visit.
+EVENT_GAP_SECONDS = 60
+
+# Where the gallery goes.  Under DATA_DIR like every other derived thing.
+SHORTLIST_DIR = DATA_DIR / "shortlist"
+
+
+# ------------------------------------------------------------
 # Housekeeping
 # ------------------------------------------------------------
 

@@ -35,16 +35,19 @@ def _crop_destination(frame_path, index, run_id):
     without it the second would silently overwrite the first.
     """
     frame_path = Path(frame_path)
-    # <camera>/<day>/training/train_x.jpg -> <camera>/<day>
-    parts = frame_path.parts
-    relative_directory = Path(*parts[:-2]) if len(parts) >= 3 else Path()
-
-    return (config.CROP_DIR / f"run-{run_id}" / relative_directory /
+    # <camera>/<day>/training/train_x.jpg -> <camera>/<day>/training, and
+    # <camera>/<day>/103415.jpg -> <camera>/<day>.  The crop sits in the
+    # same place relative to the crops directory as the frame does to the
+    # photo library, whatever kind of frame it is.  (An earlier version
+    # took the grandparent, which was right for training frames and put a
+    # photograph's crop under the camera directory with no day.)
+    return (config.CROP_DIR / f"run-{run_id}" / frame_path.parent /
             f"{frame_path.stem}_{index}.jpg")
 
 
 def run(camera=None, day=None, limit=None, new_run=False, crops=None,
-        model=None, threads=None, quiet=False, retry_errors=False):
+        model=None, threads=None, quiet=False, retry_errors=False,
+        kind=None):
     """Run the detector over every frame this run has not seen yet.
 
     Returns a small summary dictionary.  Safe to call again at any time:
@@ -73,7 +76,7 @@ def run(camera=None, day=None, limit=None, new_run=False, crops=None,
 
     queue = manifest_module.frames_to_detect(
         database, run_id, camera=camera, day=day, limit=limit,
-        retry_errors=retry_errors)
+        retry_errors=retry_errors, kind=kind)
 
     if not queue:
         if not quiet:

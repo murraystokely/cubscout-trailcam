@@ -41,7 +41,7 @@ import subprocess
 from . import config
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 SCHEMA = """
@@ -63,10 +63,20 @@ CREATE TABLE IF NOT EXISTS frames (
 
     -- Brightness of the image.  Algorithms read it, none of them decided
     -- it, so it sits with the file.
-    mean_luma   REAL
+    mean_luma   REAL,
+
+    -- 'training' for a burst frame the motion rules were not allowed to
+    -- filter; 'photo' for a photograph the rules chose to keep.  The whole
+    -- of evaluation-design.md rests on never confusing the two: the
+    -- training frames are an unbiased sample and the photographs are
+    -- exactly the frames that passed the rules under test.  Every
+    -- evaluation query filters on this column, and only the gallery reads
+    -- both.
+    kind        TEXT NOT NULL DEFAULT 'training'
 );
 
 CREATE INDEX IF NOT EXISTS frames_where ON frames(camera, day);
+CREATE INDEX IF NOT EXISTS frames_kind ON frames(kind);
 
 -- One row per thing-that-looked-at-frames.  Three kinds so far:
 --
@@ -197,6 +207,7 @@ JOIN (SELECT frame_id, MAX(id) AS id FROM annotations GROUP BY frame_id)
 CREATE VIEW IF NOT EXISTS verdicts AS
 SELECT
     f.id AS frame_id, f.camera, f.day, f.path, f.captured_at, f.mean_luma,
+    f.kind,
 
     camera_result.decision     AS camera_decision,
     camera_result.largest_area AS largest_area,
@@ -320,6 +331,27 @@ def _migrate_names(database):
         database.commit()
 
 
+def _migrate_kind(database):
+    """Version 3 held training frames only, so it had no `kind` column.
+
+    Every row already there IS a training frame -- `scan` could find
+    nothing else -- so the column's default labels them correctly and no
+    row needs touching.
+    """
+    columns = {row[1] for row in database.execute("PRAGMA table_info(frames)")}
+    if "kind" in columns:
+        return
+
+    print("Adding frames.kind (every existing frame is a training frame)...")
+    database.execute("DROP VIEW IF EXISTS verdicts")      # it reads f.kind
+    database.execute(
+        "ALTER TABLE frames ADD COLUMN kind TEXT NOT NULL DEFAULT 'training'")
+    database.execute("DELETE FROM schema_version")
+    database.execute("INSERT INTO schema_version VALUES (?)",
+                     (SCHEMA_VERSION,))
+    database.commit()
+
+
 def migrate(database):
     """Bring an older manifest up to the current shape.
 
@@ -333,6 +365,8 @@ def migrate(database):
 
     if "frames" not in tables or "runs" in tables:
         _migrate_names(database)
+        if "frames" in tables:
+            _migrate_kind(database)
         return                                  # new database, or already v2
 
     columns = {row[1] for row in database.execute("PRAGMA table_info(frames)")}
@@ -477,6 +511,9 @@ def migrate(database):
           "record which step8 made them.")
     print("  Run `scan` to rebuild them, one run per deployment.")
 
+    # And on from version 3 to 4, in the same breath.
+    _migrate_kind(database)
+
 
 # ------------------------------------------------------------
 # Runs
@@ -610,10 +647,10 @@ def add_frames(database, frames):
 
     database.executemany(
         """INSERT OR IGNORE INTO frames
-               (camera, day, path, captured_at, mean_luma)
-           VALUES (?, ?, ?, ?, ?)""",
+               (camera, day, path, captured_at, mean_luma, kind)
+           VALUES (?, ?, ?, ?, ?, ?)""",
         [(f.camera, f.day, f.relative_path, f.captured_at.isoformat(),
-          f.mean_luma) for f in frames])
+          f.mean_luma, f.kind) for f in frames])
     database.commit()
 
     return database.total_changes - before
@@ -666,17 +703,22 @@ def record_camera_decisions(database, frames):
 
 
 def frames_to_detect(database, run_id, camera=None, day=None, limit=None,
-                     retry_errors=False):
+                     retry_errors=False, kind=None):
     """The work queue for one run: frames it has no row for.
 
     With `retry_errors`, frames it recorded as unreadable come back too --
     for when the cause was a truncated file that has since been re-synced.
+    `kind` narrows it to training frames or photographs; a run that has
+    seen both is fine, since every result row knows which frame it is for.
     """
     where = ["result.id IS NULL"]
     arguments = [run_id]
 
     if retry_errors:
         where = ["(result.id IS NULL OR result.status <> 'ok')"]
+    if kind:
+        where.append("f.kind = ?")
+        arguments.append(kind)
     if camera:
         where.append("f.camera = ?")
         arguments.append(camera)
@@ -753,13 +795,16 @@ def counts(database):
 
     row = database.execute(
         """SELECT COUNT(*) AS frames,
+                  SUM(kind = 'photo') AS photos,
                   COUNT(DISTINCT camera) AS cameras,
                   COUNT(DISTINCT day) AS days,
                   MIN(day) AS first_day,
                   MAX(day) AS last_day
-             FROM frames""").fetchone()
+             FROM frames WHERE kind = 'training'""").fetchone()
 
     totals = dict(row)
+    totals["photos"] = database.execute(
+        "SELECT COUNT(*) FROM frames WHERE kind = 'photo'").fetchone()[0]
     totals["reference"] = reference["name"] if reference else None
     totals["detected"] = database.execute(
         "SELECT COUNT(*) FROM frame_results WHERE run_id = ?",
