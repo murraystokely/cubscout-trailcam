@@ -2,7 +2,8 @@
 
 **Run:** 12--13 September 2026.
 **Corpus:** `dc1aa80c0519897b` --- 250 frames, 118 MB, sha256-verified on both machines.
-**Models:** MegaDetector v5a; MDv6-spruce on the ThinkPad only.
+**Models:** MegaDetector v5a; MDv6-spruce on the ThinkPad only; MDv6-redwood
+on the Mac Studio (added the afternoon of the 13th, once it would load).
 **Method:** [`benchmarks/README.md`](benchmarks/README.md). Raw results in
 [`benchmarks/`](benchmarks/).
 
@@ -74,6 +75,27 @@ hypotheses into one answer.
 Until then: `detect.py` stays one frame at a time, which is also the mode
 every machine can run.
 
+### Resolved, later the same day: it is batching itself
+
+The four-minute experiment was run. The library's batch pipeline at
+`--batch-size 1` on MPS measures **0.071 s/frame** --- the same as our own
+loop's 0.072, to within noise, and with **identical findings** on all 250
+frames.
+
+That eliminates two of the three hypotheses at once. The pipeline is not
+the overhead (hypothesis 1: it costs nothing at batch 1), and the
+model-load subtraction is not inflating anything (hypothesis 3: it gave the
+right answer here). What remains is hypothesis 2: **pushing eight
+1280x1280 images through the network at once is genuinely 2.5x slower on
+MPS than pushing them one at a time.** Why Metal does that is not
+something this benchmark can see --- memory bandwidth on a 1280x1280x8
+activation tensor is the obvious suspect --- and it does not matter for the
+decision: batching is off, `detect.py` stays one frame at a time, and that
+is now a measured choice rather than a default.
+
+A CUDA box may well answer differently. The experiment is the same two
+commands.
+
 ## Do the machines agree with each other?
 
 This is the half a timing table usually leaves out, and it came out better
@@ -84,6 +106,7 @@ than expected.
 | Mac MPS vs Mac CPU | **0 of 250** | 0.0000 | 0 |
 | Mac vs ThinkPad (both CPU) | 27 of 250 | 0.1020 | **0** |
 | Mac MPS vs ThinkPad CPU | 27 of 250 | 0.1020 | **0** |
+| Mac MPS vs Mac CPU, **redwood** | **0 of 250** | 0.0000 | 0 |
 
 **The GPU and the CPU on the same machine agree exactly**, to the four
 decimal places we record. Whatever MPS does differently, it is below our
@@ -108,6 +131,20 @@ spread is the 0.032 below it.
 animal threshold, which is the only difference that would change a
 conclusion. Running the pass on a different machine is safe.
 
+**Correction, later the same day: one did, and the table above could not
+see it.** The comparison only checked the animal threshold. On
+`wildlifecam10/2026-08-27/train_224930_301.jpg` the ThinkPad scores a
+person at **0.802** and the Mac at **0.799**, either side of
+`PERSON_TRUTH`, and the full pass on the Mac ([the next
+write-up](2026-09-13-first-passes-on-the-mac.md)) found exactly one person
+fewer than the ThinkPad's. `bench report` now
+checks both thresholds. The conclusion stands --- a 0.003 difference on a
+frame that happens to sit on the line is not a disagreement about what is
+in the picture --- but "no verdict changed" was too strong, and a threshold
+will always have *some* frame within 0.003 of it. Whoever compares two
+machines' passes should expect a frame or two to flip, and check that they
+are at the line rather than far from it.
+
 ## Redwood did not run on the Mac
 
 The MDv6 flagship failed there and produced no result. It loads and detects
@@ -123,6 +160,37 @@ suspect); if it fails there too, the problem is the Mac's install.
 This matters beyond the benchmark. Redwood is the model we would need to
 settle whether v5a or v6 is better on our own data --- the question
 `config.DETECTOR` currently answers by convention rather than evidence.
+
+### Resolved, later the same day: neither MPS nor the install. Python 3.14.
+
+Run on the Mac's CPU, redwood fails the same way, and this time the error
+was captured:
+
+```
+AttributeError: module 'models.yolo' has no attribute 'DetectionModel'
+```
+
+The MDv6 checkpoints were saved by newer YOLOv5 code, in which the network
+class is called `DetectionModel`; the YOLOv5 fork the `megadetector` package
+bundles still calls it `Model`. The package knows this and patches it ---
+but it decides whether to patch by looking for the words "Can't get
+attribute" in the error text, and **Python 3.14 words the same failure as
+"has no attribute"**. So on 3.14 the patch never fires and redwood looks
+like a corrupt file. The ThinkPad runs 3.12, which is the whole reason it
+loaded there.
+
+`detector.py` now does the package's own alias itself, keyed on the class
+name rather than the wording, and retries once. With that in place:
+
+| model | device | s/frame | vs MDv5a |
+|---|---|---|---|
+| md1000-redwood | mps | **0.072** | same |
+| md1000-redwood | cpu | 0.346 | 4% faster |
+
+**Redwood costs exactly what v5a costs**, which the package's own speed
+table predicted. Its MPS and CPU findings agree on all 250 frames. So the
+v5a-against-v6 question is now a seven-minute run away, and it is the next
+thing to do.
 
 ## Notes for next time
 

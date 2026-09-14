@@ -6,8 +6,9 @@ table.
 
 First write-up: [which machine should run the
 pass](../2026-09-13-benchmarking-the-lab.md) --- the Mac Studio is 36x the
-ThinkPad, batching on MPS made it *worse*, and no machine disagreed with
-another about a single verdict.
+ThinkPad, batching on MPS made it *worse* (and batch size 1 through the
+same pipeline showed it is batching itself, not the pipeline), and the
+machines disagree only on frames sitting within 0.003 of a threshold.
 
 ## What is being measured, and why that
 

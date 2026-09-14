@@ -135,6 +135,41 @@ def _download(url, destination, expected_md5=None, timeout=60):
     print(f"Weights are in {destination}")
 
 
+def _load_with_newer_yolo_names(load_detector, weights, options):
+    """Load a checkpoint, coping with a class that changed its name.
+
+    The `megadetector` package brings an old YOLOv5 fork whose network
+    class is called `Model`.  The MDv6 checkpoints (redwood, spruce...)
+    were saved by newer YOLOv5 code, where the same class is called
+    `DetectionModel`, so unpickling one looks up a name the fork does not
+    have.  The package knows about this and patches it -- but it decides
+    whether to patch by reading the error message, looking for "Can't get
+    attribute".  Python 3.14 words that same failure as "module 'models.yolo'
+    has no attribute 'DetectionModel'", so on 3.14 the patch never fires
+    and redwood refuses to load with a message that looks like a corrupt
+    file.  It is not: the md5 matches, and the ThinkPad (Python 3.12) loads
+    it fine.  That is the whole of the "redwood fails on the Mac" mystery
+    from results/2026-09-13-benchmarking-the-lab.md.
+
+    So do the package's own fix here, keyed on the class name rather than
+    the wording.  The alias has to go in AFTER the first attempt: `models`
+    is only importable once the package has put the YOLOv5 directory on
+    sys.path, which it does inside `load_detector`.
+    """
+    try:
+        return load_detector(weights, detector_options=options)
+    except AttributeError as failure:
+        if "DetectionModel" not in str(failure):
+            raise
+
+    from models import yolo                     # noqa  (the fork, now on sys.path)
+
+    if not hasattr(yolo, "DetectionModel"):
+        yolo.DetectionModel = yolo.Model
+
+    return load_detector(weights, detector_options=options)
+
+
 class MegaDetector:
     """The real thing, from the `megadetector` package on PyPI.
 
@@ -169,7 +204,8 @@ class MegaDetector:
         # machine to each in turn and compare them honestly.
         options = {"device": device} if device else None
 
-        self.model = load_detector(self.weights, detector_options=options)
+        self.model = _load_with_newer_yolo_names(load_detector, self.weights,
+                                                 options)
         self.threads = threads
         self.device = str(getattr(self.model, "device", "unknown"))
 
