@@ -39,7 +39,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from trailcam import bench, bursts, detector, manifest, report  # noqa: E402
+from trailcam import (bench, bursts, detect, detector, manifest,  # noqa: E402
+                      photos, report, shortlist)
 from trailcam.detector import Box                          # noqa: E402
 
 
@@ -682,6 +683,282 @@ class Export(unittest.TestCase):
 
         self.assertEqual(
             json.loads(destination.read_text())["info"]["detector"], "MDV5A")
+
+
+class FindingPhotographs(unittest.TestCase):
+    """The other walker: the photographs the camera chose to keep."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.day = self.root / "wildlifecam9" / "2026-08-24"
+        training = self.day / "training"
+        training.mkdir(parents=True)
+
+        (training / "train_103415_876.jpg").write_bytes(b"jpeg")
+        (self.day / "103415.jpg").write_bytes(b"jpeg")
+        (self.day / "103415_annotated.jpg").write_bytes(b"jpeg")
+        (self.day / "103415.json").write_text(json.dumps({
+            "camera": "pi-in-the-oak", "code": "abc123def456",
+            "time": "2026-08-24T10:34:15.623095",
+            "trigger": "confirmed motion",
+            "motion": {"largest_blob_area": 538, "mean_luma": 178.5,
+                       "extent": 0.63, "aspect": 1.36},
+            "ai": {"detections": [
+                {"class": "bed", "confidence": 0.32},
+                {"class": "bench", "confidence": 0.56}]},
+        }))
+        # An old-camera photograph with no sidecar at all (wildlifecam1).
+        (self.day / "110000.jpg").write_bytes(b"jpeg")
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def test_finds_the_photographs_and_nothing_else(self):
+        found = photos.find_photos(photo_root=self.root)
+        self.assertEqual([Path(f.relative_path).name for f in found],
+                         ["103415.jpg", "110000.jpg"])
+        self.assertTrue(all(f.kind == "photo" for f in found))
+
+    def test_reads_the_sidecar(self):
+        photo = photos.find_photos(photo_root=self.root)[0]
+        self.assertEqual(photo.captured_at,
+                         datetime(2026, 8, 24, 10, 34, 15, 623095))
+        self.assertEqual(photo.camera_decision, "confirmed motion")
+        self.assertEqual(photo.mean_luma, 178.5)
+        self.assertEqual(photo.largest_area, 538)
+        self.assertEqual(photo.code_version, "abc123def456")
+        self.assertEqual(photo.metrics["extent"], 0.63)
+        # The on-board model's best guess, not its first.
+        self.assertEqual(photo.metrics["ai_class"], "bench")
+
+    def test_no_sidecar_is_a_row_with_the_time_from_the_name(self):
+        photo = photos.find_photos(photo_root=self.root)[1]
+        self.assertEqual(photo.captured_at, datetime(2026, 8, 24, 11, 0, 0))
+        self.assertIsNone(photo.camera_decision)
+        self.assertIsNone(photo.mean_luma)
+        # The day's fingerprint still applies: it came from the same camera.
+        self.assertEqual(photo.code_version, "abc123def456")
+
+    def test_training_frames_keep_their_kind(self):
+        frame = bursts.find_frames(photo_root=self.root)[0]
+        self.assertEqual(frame.kind, "training")
+
+
+class TwoKindsOfFrame(ManifestBase):
+    """Training frames and photographs share a table and never mix."""
+
+    def _photo(self, name):
+        return self._frame(name)._replace(
+            relative_path=f"wildlifecam9/2026-08-24/{name}", kind="photo",
+            camera_decision="confirmed motion")
+
+    def test_the_kind_is_stored_and_visible_in_verdicts(self):
+        self._add(self._frame("train_1.jpg"), self._photo("103415.jpg"))
+        rows = self.database.execute(
+            "SELECT path, kind FROM verdicts ORDER BY path").fetchall()
+        self.assertEqual([(r["path"].rsplit("/", 1)[1], r["kind"])
+                          for r in rows],
+                         [("103415.jpg", "photo"), ("train_1.jpg", "training")])
+
+    def test_a_run_can_be_queued_on_one_kind(self):
+        self._add(self._frame("train_1.jpg"), self._photo("103415.jpg"))
+        run = manifest.start_run(self.database, "detector", "MDV5A")
+
+        photos_only = manifest.frames_to_detect(self.database, run,
+                                                kind="photo")
+        self.assertEqual([r["path"].rsplit("/", 1)[1] for r in photos_only],
+                         ["103415.jpg"])
+        self.assertEqual(len(manifest.frames_to_detect(self.database, run)), 2)
+
+    def test_the_photographs_join_the_cameras_own_run(self):
+        frames = [self._frame("train_1.jpg"), self._photo("103415.jpg")]
+        self._add(*frames)
+        manifest.record_camera_decisions(self.database, frames)
+
+        runs = [r for r in manifest.runs(self.database) if r["kind"] == "camera"]
+        self.assertEqual(len(runs), 1)              # same deployment
+        self.assertEqual(runs[0]["frames"], 2)
+
+    def test_the_counts_keep_them_apart(self):
+        self._add(self._frame("train_1.jpg"), self._photo("103415.jpg"),
+                  self._photo("103416.jpg"))
+        totals = manifest.counts(self.database)
+        self.assertEqual(totals["frames"], 1)
+        self.assertEqual(totals["photos"], 2)
+
+    def test_the_confidence_split_reads_training_frames_only(self):
+        frames = [self._frame("train_1.jpg"), self._photo("103415.jpg")]
+        ids = self._add(*frames)
+        run = manifest.start_run(self.database, "detector", "MDV5A")
+        manifest.set_reference(self.database, run)
+        for frame_id in ids:
+            manifest.record_detections(self.database, run, frame_id, [
+                Box("animal", 0.95, 0.1, 0.1, 0.2, 0.2, None)])
+        self.database.commit()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            report.split(self.database)
+        # One animal, not two: the photograph is not in the evaluation.
+        self.assertIn("animal                      1", output.getvalue())
+
+
+class MigratingToKinds(unittest.TestCase):
+    """A version-3 manifest has no `kind`; every row in it is training."""
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.path = self.directory / "v3.sqlite"
+        old = sqlite3.connect(self.path)
+        old.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (3);
+            CREATE TABLE frames (
+                id INTEGER PRIMARY KEY, camera TEXT NOT NULL,
+                day TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
+                captured_at TEXT NOT NULL, mean_luma REAL);
+            INSERT INTO frames VALUES
+                (1, 'wildlifecam9', '2026-08-24',
+                 'wildlifecam9/2026-08-24/training/train_1.jpg',
+                 '2026-08-24T10:34:15', 120.0);
+            CREATE TABLE runs (
+                id INTEGER PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+                params TEXT, weights_md5 TEXT, code_version TEXT, host TEXT,
+                started_at TEXT, finished_at TEXT, role TEXT, notes TEXT);
+            CREATE TABLE frame_results (
+                id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL,
+                frame_id INTEGER NOT NULL, recorded_at TEXT,
+                status TEXT NOT NULL DEFAULT 'ok', error TEXT,
+                decision TEXT, largest_area INTEGER, n_animal INTEGER,
+                n_person INTEGER, n_vehicle INTEGER, max_animal_conf REAL,
+                max_person_conf REAL, metrics TEXT, UNIQUE (run_id, frame_id));
+            CREATE TABLE detections (
+                id INTEGER PRIMARY KEY, frame_result_id INTEGER NOT NULL,
+                category TEXT NOT NULL, confidence REAL NOT NULL,
+                x REAL, y REAL, w REAL, h REAL, crop_path TEXT);
+            CREATE TABLE annotations (
+                id INTEGER PRIMARY KEY, frame_id INTEGER NOT NULL,
+                label TEXT NOT NULL, who TEXT, labelled_at TEXT NOT NULL,
+                notes TEXT);
+        """)
+        old.commit()
+        old.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.directory)
+
+    def test_the_column_arrives_and_old_rows_are_training(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            database = manifest.open_manifest(self.path)
+        row = database.execute(
+            "SELECT kind FROM frames WHERE id = 1").fetchone()
+        self.assertEqual(row["kind"], "training")
+        self.assertEqual(database.execute(
+            "SELECT version FROM schema_version").fetchone()[0],
+            manifest.SCHEMA_VERSION)
+        # And the view was rebuilt to know about it.
+        self.assertEqual(database.execute(
+            "SELECT kind FROM verdicts").fetchone()[0], "training")
+        database.close()
+
+    def test_opening_twice_is_harmless(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            manifest.open_manifest(self.path).close()
+            manifest.open_manifest(self.path).close()
+
+
+class CropDestinations(unittest.TestCase):
+
+    def test_a_training_frame_and_a_photograph_both_keep_their_day(self):
+        training = detect._crop_destination(
+            Path("wildlifecam9/2026-08-24/training/train_1.jpg"), 0, 7)
+        photo = detect._crop_destination(
+            Path("wildlifecam9/2026-08-24/103415.jpg"), 0, 7)
+
+        self.assertTrue(str(training).endswith(
+            "run-7/wildlifecam9/2026-08-24/training/train_1_0.jpg"))
+        self.assertTrue(str(photo).endswith(
+            "run-7/wildlifecam9/2026-08-24/103415_0.jpg"))
+
+
+class RankingTheShortlist(unittest.TestCase):
+    """The four signals and the grouping into visits."""
+
+    def box(self, x=0.4, y=0.4, w=0.1, h=0.1, conf=0.9, camera="cam",
+            when="2026-08-24T10:00:00"):
+        return {"x": x, "y": y, "w": w, "h": h, "confidence": conf,
+                "camera": camera, "captured_at": when, "path": "p.jpg"}
+
+    def test_size_stops_helping_once_the_animal_is_big_enough(self):
+        speck = shortlist.size_term(self.box(w=0.01, h=0.01))
+        plenty = shortlist.size_term(self.box(w=0.3, h=0.3))
+        self.assertLess(speck, 0.25)                 # 0.01% of the frame
+        self.assertEqual(plenty, 1.0)
+
+    def test_a_box_on_the_edge_is_clipped(self):
+        self.assertFalse(shortlist.is_clipped(self.box()))
+        self.assertTrue(shortlist.is_clipped(self.box(x=0.0)))
+        self.assertTrue(shortlist.is_clipped(self.box(x=0.95, w=0.1)))
+
+    def test_frames_a_minute_apart_are_different_visits(self):
+        a = self.box(when="2026-08-24T10:00:00")
+        b = self.box(when="2026-08-24T10:00:30")
+        c = self.box(when="2026-08-24T10:01:20")       # 50 s on: same visit
+        d = self.box(when="2026-08-24T10:01:30", camera="other")
+
+        groups = shortlist.visits([a, b, c, d])
+        self.assertEqual([len(g) for g in groups], [3, 1])
+
+    def test_only_the_best_of_a_visit_survives_and_it_knows_its_length(self):
+        entries = [self.box(when="2026-08-24T10:00:00"),
+                   self.box(when="2026-08-24T10:00:05"),
+                   self.box(when="2026-08-24T10:00:10")]
+        for score, entry in zip((0.5, 0.9, 0.7), entries):
+            entry["score"] = score
+
+        best = shortlist.best_of_each_visit(entries)
+        self.assertEqual(len(best), 1)
+        self.assertEqual(best[0]["score"], 0.9)
+        self.assertEqual(best[0]["visit_frames"], 3)
+
+    def test_size_leans_gently_on_small_subjects(self):
+        # A squirrel at 0.3% of the frame: a square root gave it 0.24 and
+        # buried it at rank 126 of 150; the fourth root gives about 0.5.
+        squirrel = shortlist.size_term(self.box(w=0.052, h=0.055))
+        self.assertGreater(squirrel, 0.45)
+        self.assertLess(squirrel, 0.55)
+
+    def test_an_animal_within_a_minute_of_a_person_is_left_out(self):
+        child_called_animal = self.box(when="2026-09-04T13:56:18")
+        crow_later = self.box(when="2026-09-04T14:30:00")
+        other_camera = self.box(when="2026-09-04T13:56:18", camera="far")
+        people = [("cam", datetime(2026, 9, 4, 13, 56, 34))]
+
+        kept = shortlist.without_people(
+            [child_called_animal, crow_later, other_camera], people)
+        self.assertEqual(kept, [crow_later, other_camera])
+
+    def test_blur_lowers_the_sharpness(self):
+        try:
+            from PIL import Image, ImageFilter
+        except ImportError:
+            self.skipTest("Pillow is not installed for this interpreter")
+
+        directory = Path(tempfile.mkdtemp())
+        try:
+            sharp = Image.new("L", (200, 200), 0)
+            for i in range(0, 200, 10):
+                sharp.paste(255, (i, 0, i + 5, 200))    # stripes
+            blurred = sharp.filter(ImageFilter.GaussianBlur(4))
+            sharp.save(directory / "sharp.jpg")
+            blurred.save(directory / "blurred.jpg")
+
+            whole = self.box(x=0.0, y=0.0, w=1.0, h=1.0)
+            self.assertGreater(shortlist.sharpness(directory / "sharp.jpg", whole),
+                               shortlist.sharpness(directory / "blurred.jpg",
+                                                   whole))
+        finally:
+            shutil.rmtree(directory)
 
 
 class ComparingTwoMachines(unittest.TestCase):

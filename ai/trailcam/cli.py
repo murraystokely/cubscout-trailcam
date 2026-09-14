@@ -26,15 +26,27 @@ from . import bursts
 from . import config
 from . import detect as detect_module
 from . import manifest as manifest_module
+from . import photos
 from . import report as report_module
+from . import shortlist as shortlist_module
 
 
 def command_scan(options):
-    """Walk the photo library and put a row in the manifest per frame."""
-    frames = bursts.find_frames(camera=options.camera, day=options.day)
+    """Walk the photo library and put a row in the manifest per frame.
+
+    Training frames by default -- the evaluation's input.  `--kind photo`
+    indexes the photographs the cameras chose instead, and `--kind all`
+    both.  They land in the same table with different `kind`s, and every
+    evaluation query reads only the training ones.
+    """
+    frames = []
+    if options.kind in ("training", "all"):
+        frames += bursts.find_frames(camera=options.camera, day=options.day)
+    if options.kind in ("photo", "all"):
+        frames += photos.find_photos(camera=options.camera, day=options.day)
 
     if not frames:
-        print(f"No training bursts found under {config.PHOTO_ROOT}.")
+        print(f"Nothing found under {config.PHOTO_ROOT}.")
         print("Expected <camera>/<YYYY-MM-DD>/training/train_*.jpg -- "
               "is --record switched on out there, and has sync run?")
         return 1
@@ -45,8 +57,10 @@ def command_scan(options):
 
     without_csv = sum(1 for f in frames if f.camera_decision is None)
 
-    print(f"{len(frames)} training frames on disk, {added} new to the "
-          f"manifest.")
+    training = sum(1 for f in frames if f.kind == "training")
+    kept = len(frames) - training
+    print(f"{training} training frames and {kept} photographs on disk, "
+          f"{added} new to the manifest.")
 
     if decisions:
         print(f"  {decisions} camera decisions recorded.")
@@ -65,9 +79,9 @@ def command_scan(options):
     if without_csv:
         # Worth flagging loudly: a frame with no CSV row is a frame we
         # cannot grade the camera against, which is the whole point.
-        print(f"  {without_csv} of them have no row in any "
-              f"measurements-*.csv, so there is nothing to compare the "
-              f"detector against for those.")
+        print(f"  {without_csv} of them have no camera decision (no CSV "
+              f"row, or no JSON sidecar), so there is nothing to compare "
+              f"the detector against for those.")
 
     database.close()
     return 0
@@ -78,7 +92,8 @@ def command_detect(options):
     summary = detect_module.run(
         camera=options.camera, day=options.day, limit=options.limit,
         new_run=options.new_run, crops=options.crops, model=options.model,
-        threads=options.threads, retry_errors=options.retry_errors)
+        threads=options.threads, retry_errors=options.retry_errors,
+        kind=None if options.kind == "all" else options.kind)
 
     # Nothing to do is a success.  Every frame failing is not.
     return 1 if summary["frames"] and summary["errors"] == summary["frames"] \
@@ -131,9 +146,10 @@ def command_label(options):
         return 1
 
     manifest_module.add_annotation(database, rows[0]["id"],
-                                   options.label)
+                                   options.label, notes=options.notes)
 
-    print(f"{rows[0]['path']}: {options.label}")
+    print(f"{rows[0]['path']}: {options.label}"
+          + (f"  ({options.notes})" if options.notes else ""))
     database.close()
     return 0
 
@@ -207,6 +223,17 @@ def command_compare(options):
     return 0
 
 
+def command_shortlist(options):
+    """The best animal pictures, one per visit, as a table and a gallery."""
+    database = manifest_module.open_manifest()
+    shortlist_module.build(
+        database, run_id=options.run,
+        kind=None if options.kind == "all" else options.kind,
+        top=options.top, destination=options.out)
+    database.close()
+    return 0
+
+
 def command_status(options):
     database = manifest_module.open_manifest()
     report_module.coverage(database)
@@ -255,10 +282,18 @@ def build_parser():
 
     scan = with_selection(subcommands.add_parser(
         "scan", help="find training bursts on disk and index them"))
+    scan.add_argument("--kind", choices=("training", "photo", "all"),
+                      default="training",
+                      help="training: the bursts (default). photo: the "
+                           "photographs the cameras kept. all: both")
     scan.set_defaults(function=command_scan)
 
     detect = with_selection(subcommands.add_parser(
         "detect", help="run MegaDetector over every frame not yet seen"))
+    detect.add_argument("--kind", choices=("training", "photo", "all"),
+                        default="all",
+                        help="which frames to queue (default: everything "
+                             "this run has not seen)")
     detect.add_argument("--limit", type=int,
                         help="stop after this many frames (try 50 first)")
     detect.add_argument("--new-run", action="store_true",
@@ -292,6 +327,8 @@ def build_parser():
     label.add_argument("path")
     label.add_argument("label", choices=("animal", "empty", "person",
                                          "vehicle", "cannot tell"))
+    label.add_argument("--notes", default=None,
+                       help="anything else you saw: the species, mostly")
     label.set_defaults(function=command_label)
 
     export = subcommands.add_parser(
@@ -316,6 +353,21 @@ def build_parser():
     compare.add_argument("run_a", type=int)
     compare.add_argument("run_b", type=int)
     compare.set_defaults(function=command_compare)
+
+    shortlist = subcommands.add_parser(
+        "shortlist", help="the best animal pictures, ranked, one per visit")
+    shortlist.add_argument("--run", type=int, default=None,
+                           help="which run's boxes (default: the reference)")
+    shortlist.add_argument("--kind", choices=("training", "photo", "all"),
+                           default="all",
+                           help="rank the camera's photographs, the "
+                                "training frames, or both (default)")
+    shortlist.add_argument("--top", type=int, default=30,
+                           help="how many to print and put in the gallery")
+    shortlist.add_argument("--out", default=None,
+                           help=f"gallery directory (default "
+                                f"{config.SHORTLIST_DIR})")
+    shortlist.set_defaults(function=command_shortlist)
 
     status = subcommands.add_parser("status", help="how much is done")
     status.set_defaults(function=command_status)

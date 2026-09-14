@@ -41,6 +41,9 @@ def coverage(database):
     print("Frames in the manifest")
     print("----------------------")
     print(f"  training frames   {totals['frames'] or 0}")
+    if totals["photos"]:
+        print(f"  photographs       {totals['photos']}   "
+              f"(the camera's picks; not in any number below)")
     print(f"  cameras           {totals['cameras'] or 0}")
     print(f"  days              {totals['days'] or 0}  "
           f"({totals['first_day']} .. {totals['last_day']})")
@@ -81,7 +84,9 @@ def split(database):
     rows = database.execute(
         """
         SELECT verdict, verdict_source, COUNT(*) AS n
-          FROM verdicts GROUP BY verdict, verdict_source ORDER BY n DESC
+          FROM verdicts
+         WHERE kind = 'training'
+         GROUP BY verdict, verdict_source ORDER BY n DESC
         """
     ).fetchall()
 
@@ -136,7 +141,7 @@ def against_the_camera(database):
                COALESCE(camera_decision, '(no CSV row)') AS decision,
                COUNT(*) AS n
           FROM verdicts
-         WHERE status IS NOT NULL
+         WHERE status IS NOT NULL AND kind = 'training'
          GROUP BY verdict, decision
         """
     ).fetchall()
@@ -217,7 +222,7 @@ def by_light(database):
                verdict,
                COUNT(*) AS n
           FROM verdicts
-         WHERE status IS NOT NULL
+         WHERE status IS NOT NULL AND kind = 'training'
          GROUP BY light, verdict
          ORDER BY light, n DESC
         """
@@ -247,6 +252,7 @@ def check_the_checker(database, sample_size=200, seed=None):
         SELECT path, verdict, max_animal_conf, camera_decision, mean_luma
           FROM verdicts
          WHERE status IS NOT NULL AND annotation IS NULL
+           AND kind = 'training'
         """
     ).fetchall()
 
@@ -279,6 +285,7 @@ def uncertain_queue(database, limit=50):
         SELECT path, max_animal_conf, camera_decision, mean_luma
           FROM verdicts
          WHERE verdict = 'uncertain' AND annotation IS NULL
+           AND kind = 'training'
          ORDER BY max_animal_conf DESC
          LIMIT ?
         """,
@@ -391,7 +398,7 @@ def by_deployment(database):
           FROM runs r
           JOIN frame_results fr ON fr.run_id = r.id
           JOIN verdicts v ON v.frame_id = fr.frame_id
-         WHERE r.kind = 'camera'
+         WHERE r.kind = 'camera' AND v.kind = 'training'
          GROUP BY r.id ORDER BY r.name, r.code_version
         """
     ).fetchall()
@@ -402,8 +409,10 @@ def by_deployment(database):
 
     for row in rows:
         wanted = database.execute(
-            """SELECT decision, COUNT(*) n FROM frame_results
+            """SELECT decision, COUNT(*) n FROM frame_results fr
+                JOIN frames f ON f.id = fr.frame_id
                 WHERE run_id = ? AND decision IS NOT NULL
+                  AND f.kind = 'training'
              GROUP BY decision""", (row["run_id"],)).fetchall()
 
         kept = sum(r["n"] for r in wanted

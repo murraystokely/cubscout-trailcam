@@ -36,7 +36,10 @@ Frame = namedtuple("Frame", [
     "camera", "day", "relative_path", "absolute_path", "captured_at",
     "camera_decision", "mean_luma", "largest_area", "code_version",
     "metrics",
-])
+    # 'training' here; photos.py makes the same tuple with 'photo'.  The
+    # default keeps every existing caller and test unchanged.
+    "kind",
+], defaults=["training"])
 
 
 # Columns of the measurements CSV that are the motion algorithm's own

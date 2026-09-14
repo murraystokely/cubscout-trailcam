@@ -59,10 +59,15 @@ can be rebuilt from the photo library.
 
 ```bash
 cd ai
+export WILDLIFE_PHOTOS=/Volumes/datasets/trailcam/photos   # the NAS
 .venv/bin/python -m trailcam scan                # index the bursts on disk
 .venv/bin/python -m trailcam detect --limit 50   # try it on fifty frames
 .venv/bin/python -m trailcam detect              # the real pass
 .venv/bin/python -m trailcam report              # what it found
+
+.venv/bin/python -m trailcam scan --kind photo   # and the photographs
+.venv/bin/python -m trailcam detect --kind photo
+.venv/bin/python -m trailcam shortlist           # the best animal pictures
 ```
 
 `scan` is cheap and safe to rerun after every sync; it adds rows for frames
@@ -93,7 +98,9 @@ Five tables, and the split between the first two is the whole design:
 
 ```
 frames          one row per file.  Nothing any algorithm decided --
-                camera, day, path, when it was taken, how bright it is.
+                camera, day, path, when it was taken, how bright it is,
+                and its kind: a `training` burst frame, or a `photo`
+                the camera chose to keep.
 
 runs            one row per thing-that-looked-at-frames, per execution:
                   camera    what step8 decided in the woods, one run per
@@ -207,6 +214,37 @@ concluded that the camera misses 95% of the animals in front of it --- and
 somebody would have spent a weekend loosening thresholds to chase a pile of
 Cheerios.
 
+## The photographs, and the best of them
+
+Everything above is about the training bursts, because they are the only
+frames the camera can be graded on. But every good picture of an animal is
+in the *other* pile --- the photographs the motion rules chose to keep ---
+and that pile is six times larger.
+
+```bash
+.venv/bin/python -m trailcam scan --kind photo     # <camera>/<day>/HHMMSS.jpg
+.venv/bin/python -m trailcam detect --kind photo   # ~45 min on the Mac Studio
+.venv/bin/python -m trailcam shortlist --top 30
+```
+
+The photographs go into the same `frames` table with `kind = 'photo'`, and
+the rule that keeps the evaluation honest is one line long: **every number
+in `report`, `sample` and `bench` reads training frames only.** A
+photograph is exactly a frame that passed the rules under test, and letting
+one into the miss rate would be the mistake `evaluation-design.md` opens by
+warning about. `compare` and `export` read both, because comparing two
+detectors or reviewing in Timelapse is not an evaluation of the camera.
+
+`shortlist` is the first cut of M1 from `design.md`: no new model, just the
+detector's boxes and four cheap signals --- confidence, subject size, whether
+the box is clipped by the frame edge, and sharpness (variance of the
+Laplacian over the box) --- multiplied into a score. Frames from the same
+camera less than a minute apart are one *visit*, and only the best frame of
+a visit makes the list, so a crow that stayed for forty frames is one entry.
+It writes a CSV and a static gallery under `ai/data/shortlist/`. Every
+constant is in `config.py` with its reason, and every one of them is a
+first guess.
+
 ## Checking the checker
 
 MegaDetector is not an oracle. It is weakest on small distant animals and on
@@ -278,11 +316,14 @@ ai/
   trailcam/
     config.py      every path and threshold, each with its reason
     manifest.py    the SQLite schema; the spine everything hangs off
-    bursts.py      finding the frames, and joining the camera's own verdict
+    bursts.py      finding the training frames, and the camera's own verdict
+    photos.py      finding the photographs the camera kept, and its sidecar
     detector.py    MegaDetector behind a thin interface
     detect.py      the pass: resumable, interruptible, one frame at a time
     report.py      the confidence split and the comparison
-    cli.py         scan | detect | report | sample | label | export | status
+    shortlist.py   the best animal pictures, ranked, one per visit
+    bench.py       timing a machine on a fixed corpus
+    cli.py         scan | detect | report | shortlist | sample | label | ...
   results/         measured findings, one file per analysis, by date
   models/          downloaded weights            (gitignored)
   data/            manifest.sqlite, crops/       (gitignored)

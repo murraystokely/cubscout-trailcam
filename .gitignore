@@ -12,3 +12,8 @@ __pycache__/
 # from the seed recorded in its own corpus.json.  The RESULTS are committed
 # (ai/results/benchmarks/*.json) -- they are findings, and they are small.
 ai/data/bench/
+
+# Local-only: how the gallery gets onto Murray's own web server.  Names
+# hosts and paths on the home network, so it stays out of a public repo.
+ai/publish-shortlist.sh
+ai/PUBLISHING.md
