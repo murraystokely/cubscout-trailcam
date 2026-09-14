@@ -174,10 +174,28 @@ CROP_MIN_PIXELS = 48
 # at ten is about 8%.
 SUBJECT_FULL_AREA = 0.05
 
+# How hard to lean on size: the term is (area / SUBJECT_FULL_AREA) to this
+# power.  The first pass used a square root, and it buried every squirrel
+# and small bird in the archive under the crows that walk up to the lens:
+# a squirrel at 0.3% of the frame scored 0.24 on size and landed at rank
+# 126 of 150 (results/2026-09-13-what-is-in-the-photographs.md).  A fourth
+# root gives that squirrel 0.49 and a 1% subject 0.67, which still keeps
+# specks down without making "close" the whole ranking.
+SIZE_EXPONENT = 0.25
+
 # A box within this fraction of any frame edge is probably cut off, and a
-# picture of half an animal is worth this much of a whole one.
+# picture of half an animal is worth this much of a whole one.  0.6 let a
+# pair of crow's feet into the top ten; 0.35 does not.
 EDGE_MARGIN = 0.01
-CLIPPED_PENALTY = 0.6
+CLIPPED_PENALTY = 0.35
+
+# A frame with a person in it is not a wildlife picture, and neither is
+# the frame two seconds later where the detector happened to call the same
+# child an animal at 0.80 with no person box at all (wildlifecam4,
+# 2026-09-04 13:56).  People do not teleport: any animal frame within
+# EVENT_GAP_SECONDS of a person at or above this confidence, on the same
+# camera, is left out of the shortlist.
+PERSON_NEARBY = 0.5
 
 # Sharpness is the variance of the Laplacian over the animal box.  Rather
 # than pick an absolute number for a quantity that depends on the lens and

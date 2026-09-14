@@ -892,7 +892,7 @@ class RankingTheShortlist(unittest.TestCase):
     def test_size_stops_helping_once_the_animal_is_big_enough(self):
         speck = shortlist.size_term(self.box(w=0.01, h=0.01))
         plenty = shortlist.size_term(self.box(w=0.3, h=0.3))
-        self.assertLess(speck, 0.1)
+        self.assertLess(speck, 0.25)                 # 0.01% of the frame
         self.assertEqual(plenty, 1.0)
 
     def test_a_box_on_the_edge_is_clipped(self):
@@ -920,6 +920,23 @@ class RankingTheShortlist(unittest.TestCase):
         self.assertEqual(len(best), 1)
         self.assertEqual(best[0]["score"], 0.9)
         self.assertEqual(best[0]["visit_frames"], 3)
+
+    def test_size_leans_gently_on_small_subjects(self):
+        # A squirrel at 0.3% of the frame: a square root gave it 0.24 and
+        # buried it at rank 126 of 150; the fourth root gives about 0.5.
+        squirrel = shortlist.size_term(self.box(w=0.052, h=0.055))
+        self.assertGreater(squirrel, 0.45)
+        self.assertLess(squirrel, 0.55)
+
+    def test_an_animal_within_a_minute_of_a_person_is_left_out(self):
+        child_called_animal = self.box(when="2026-09-04T13:56:18")
+        crow_later = self.box(when="2026-09-04T14:30:00")
+        other_camera = self.box(when="2026-09-04T13:56:18", camera="far")
+        people = [("cam", datetime(2026, 9, 4, 13, 56, 34))]
+
+        kept = shortlist.without_people(
+            [child_called_animal, crow_later, other_camera], people)
+        self.assertEqual(kept, [crow_later, other_camera])
 
     def test_blur_lowers_the_sharpness(self):
         try:

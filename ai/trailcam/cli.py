@@ -146,9 +146,10 @@ def command_label(options):
         return 1
 
     manifest_module.add_annotation(database, rows[0]["id"],
-                                   options.label)
+                                   options.label, notes=options.notes)
 
-    print(f"{rows[0]['path']}: {options.label}")
+    print(f"{rows[0]['path']}: {options.label}"
+          + (f"  ({options.notes})" if options.notes else ""))
     database.close()
     return 0
 
@@ -326,6 +327,8 @@ def build_parser():
     label.add_argument("path")
     label.add_argument("label", choices=("animal", "empty", "person",
                                          "vehicle", "cannot tell"))
+    label.add_argument("--notes", default=None,
+                       help="anything else you saw: the species, mostly")
     label.set_defaults(function=command_label)
 
     export = subcommands.add_parser(

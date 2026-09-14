@@ -56,8 +56,10 @@ the actual sin.
   sunlit paving worse, so v5a stays the reference.
 - [2026-09-13 --- what is in the photographs](2026-09-13-what-is-in-the-photographs.md)
   --- MegaDetector over all 41,175 frames in 56 minutes: 1,202 animal
-  photographs, 150 visits, every one a crow, four in five before ten in
-  the morning; wildlifecam12 photographed nothing 7,006 times.
+  photographs in 150 visits: about 125 crows, 9 squirrels, 15 small brown
+  birds, and a ranking that hid every one of the squirrels until a person
+  looked. wildlifecam12 has no animal at 0.8 in 7,006 photographs, and
+  squirrels at 0.13.
 - [`shortlists/`](shortlists/) --- the ranked "best animal pictures" list
   each pass produced, one CSV per run.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each

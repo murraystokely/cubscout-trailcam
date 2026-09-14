@@ -65,7 +65,40 @@ def candidates(database, run_id, kind=None):
 
 def size_term(box):
     area = box["w"] * box["h"]
-    return min(1.0, area / config.SUBJECT_FULL_AREA) ** 0.5
+    return min(1.0, area / config.SUBJECT_FULL_AREA) ** config.SIZE_EXPONENT
+
+
+def people_nearby(database, run_id):
+    """(camera, captured_at) of every frame with a person in it, for one run.
+
+    Used to keep an animal frame out of the shortlist when a person was on
+    the same camera within a minute of it: the detector called a child an
+    animal once, with no person box at all, and only the frames either
+    side of it said otherwise.
+    """
+    return [(row["camera"], datetime.fromisoformat(row["captured_at"]))
+            for row in database.execute(
+                """SELECT f.camera, f.captured_at FROM frame_results r
+                     JOIN frames f ON f.id = r.frame_id
+                    WHERE r.run_id = ? AND r.max_person_conf >= ?""",
+                (run_id, config.PERSON_NEARBY))]
+
+
+def without_people(entries, people):
+    """Drop entries within EVENT_GAP_SECONDS of a person on the same camera."""
+    by_camera = {}
+    for camera, when in people:
+        by_camera.setdefault(camera, []).append(when)
+
+    kept = []
+    for entry in entries:
+        when = datetime.fromisoformat(entry["captured_at"])
+        near = any(abs((when - other).total_seconds())
+                   <= config.EVENT_GAP_SECONDS
+                   for other in by_camera.get(entry["camera"], ()))
+        if not near:
+            kept.append(entry)
+    return kept
 
 
 def is_clipped(box):
@@ -171,12 +204,15 @@ def build(database, run_id=None, kind=None, top=30, destination=None,
         print("No run to rank: pass --run, or set a reference run.")
         return []
 
-    entries = score(candidates(database, run["id"], kind=kind))
+    found = candidates(database, run["id"], kind=kind)
+    entries = score(without_people(found, people_nearby(database, run["id"])))
     ranked = best_of_each_visit(entries)
 
     if not quiet:
-        print(f"Run {run['id']} ({run['name']}): {len(entries)} animal "
-              f"frames at >= {config.ANIMAL_TRUTH}, in {len(ranked)} visits.\n")
+        print(f"Run {run['id']} ({run['name']}): {len(found)} animal "
+              f"frames at >= {config.ANIMAL_TRUTH}, "
+              f"{len(found) - len(entries)} left out for being within a "
+              f"minute of a person, {len(ranked)} visits.\n")
         print(f"{'#':>3}  {'score':>5}  {'conf':>4}  {'size':>5}  "
               f"{'sharp':>5}  {'frames':>6}  frame")
         for rank, entry in enumerate(ranked[:top], start=1):
@@ -189,7 +225,7 @@ def build(database, run_id=None, kind=None, top=30, destination=None,
 
     destination = Path(destination or config.SHORTLIST_DIR)
     write_csv(ranked, destination / "shortlist.csv")
-    write_gallery(ranked[:top], run, destination)
+    write_gallery(ranked, run, destination, top=top)
 
     if not quiet:
         print(f"\nWrote {destination / 'shortlist.csv'} and "
@@ -215,45 +251,61 @@ def write_csv(ranked, path):
                 e["visit_frames"], e["visit_start"], e["visit_end"]])
 
 
-def write_gallery(ranked, run, destination):
-    """A static page of the shortlist: the crop, the whole frame, the why.
+def write_gallery(ranked, run, destination, top=30):
+    """A static page of every visit: the top ones large, the rest as crops.
 
-    Two images per entry.  The crop, padded generously, shows the animal;
-    the full frame shows the photograph, which is the thing being judged.
-    The originals are copied in so the page works with the archive
-    unmounted -- thirty photographs is fifteen megabytes, not a problem.
+    The top entries get two images each -- the crop, padded generously,
+    shows the animal; the full frame shows the photograph, which is the
+    thing being judged -- and the originals are copied in so the page
+    works with the archive unmounted.  Every visit below the cut still
+    gets its crop, because the ranking judges picture quality and nothing
+    else: the first pass hid every squirrel in the archive behind the crows
+    that walk up to the lens, and a person flipping through 150 thumbnails
+    found them in a minute.  Nothing the detector called an animal should
+    be invisible from this page.
     """
     destination.mkdir(parents=True, exist_ok=True)
     images = destination / "images"
     images.mkdir(exist_ok=True)
 
     cards = []
+    strip = []
     for rank, e in enumerate(ranked, start=1):
         source = config.PHOTO_ROOT / e["path"]
-        stem = f"{rank:02d}-{e['camera']}-{Path(e['path']).stem}"
-        full = images / f"{stem}.jpg"
+        stem = f"{rank:03d}-{e['camera']}-{Path(e['path']).stem}"
         crop = images / f"{stem}-crop.jpg"
+        when = e["captured_at"].replace("T", " ")[:19]
+        why = (f"conf {e['confidence']:.2f} &times; size {e['size_term']:.2f}"
+               f" &times; sharp {e['sharp_term']:.2f}"
+               + (f" &times; clipped {config.CLIPPED_PENALTY}"
+                  if e["clipped"] else ""))
 
         try:
-            shutil.copyfile(source, full)
             _write_padded_crop(source, e, crop)
+            if rank <= top:
+                full = images / f"{stem}.jpg"
+                shutil.copyfile(source, full)
         except OSError:
             continue
 
-        when = e["captured_at"].replace("T", " ")[:19]
-        cards.append(f"""
+        if rank <= top:
+            cards.append(f"""
   <figure>
     <a href="images/{full.name}"><img src="images/{crop.name}"
          alt="animal, {e['camera']} {when}"></a>
     <figcaption>
       <b>#{rank}</b> {html.escape(e['camera'])} &middot; {when}<br>
-      score {e['score']:.2f} = conf {e['confidence']:.2f}
-      &times; size {e['size_term']:.2f}
-      &times; sharp {e['sharp_term']:.2f}
-      {'&times; clipped ' + str(config.CLIPPED_PENALTY) if e['clipped'] else ''}<br>
+      score {e['score']:.2f} = {why}<br>
       {e['visit_frames']} frame{'s' if e['visit_frames'] != 1 else ''} in this visit
       &middot; <code>{html.escape(e['path'])}</code>
     </figcaption>
+  </figure>""")
+        else:
+            strip.append(f"""
+  <figure class="small">
+    <img src="images/{crop.name}" alt="animal, {e['camera']} {when}"
+         title="#{rank} {e['camera']} {when} -- score {e['score']:.2f}, {e['path']}">
+    <figcaption>#{rank} {e['camera'][-2:]} {when[5:16]}</figcaption>
   </figure>""")
 
     page = f"""<!doctype html>
@@ -262,7 +314,10 @@ def write_gallery(ranked, run, destination):
 <style>
   body {{ font: 14px/1.4 system-ui, sans-serif; margin: 2em; background: #fafafa; }}
   main {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1.5em; }}
+  .rest {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6em; }}
   figure {{ margin: 0; background: white; border: 1px solid #ddd; padding: .5em; }}
+  figure.small {{ padding: .25em; }}
+  figure.small figcaption {{ font-size: 11px; padding-top: .2em; }}
   img {{ width: 100%; height: auto; display: block; }}
   figcaption {{ padding: .5em 0 0; color: #333; }}
   code {{ font-size: 12px; color: #666; }}
@@ -273,6 +328,11 @@ confidence &times; size &times; wholeness &times; sharpness. Click a crop for
 the whole photograph. Generated {datetime.now():%Y-%m-%d %H:%M}.</p>
 <main>{''.join(cards)}
 </main>
+<h2>Every other visit ({len(strip)})</h2>
+<p>The ranking judges picture quality, not what the animal is. Everything
+the detector called an animal is here; hover for the file.</p>
+<div class="rest">{''.join(strip)}
+</div>
 """
     (destination / "index.html").write_text(page)
 
