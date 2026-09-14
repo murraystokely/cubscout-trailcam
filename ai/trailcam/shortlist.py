@@ -308,8 +308,12 @@ def write_gallery(ranked, run, destination, top=30):
     <figcaption>#{rank} {e['camera'][-2:]} {when[5:16]}</figcaption>
   </figure>""")
 
+    # noindex, because this page may end up on a public web server at an
+    # address handed out by hand.  Nothing links to it, and this asks the
+    # search engines not to either, should somebody share the link.
     page = f"""<!doctype html>
 <meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
 <title>Best animal pictures -- run {run['id']} ({html.escape(run['name'])})</title>
 <style>
   body {{ font: 14px/1.4 system-ui, sans-serif; margin: 2em; background: #fafafa; }}
