@@ -39,7 +39,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from trailcam import bursts, detector, manifest, report    # noqa: E402
+from trailcam import bench, bursts, detector, manifest, report  # noqa: E402
 from trailcam.detector import Box                          # noqa: E402
 
 
@@ -682,6 +682,43 @@ class Export(unittest.TestCase):
 
         self.assertEqual(
             json.loads(destination.read_text())["info"]["detector"], "MDV5A")
+
+
+class ComparingTwoMachines(unittest.TestCase):
+    """`bench report` says whether two machines reached the same verdicts.
+
+    The first version only asked about animals, and so reported "no
+    verdict changed" between the ThinkPad and the Mac while a person
+    scored 0.802 on one and 0.799 on the other.
+    """
+
+    def compare(self, first, second):
+        return bench._compare_findings({"f.jpg": first}, {"f.jpg": second})
+
+    def test_identical_findings_differ_nowhere(self):
+        boxes = [{"category": "1", "conf": 0.85}]
+        result = self.compare(boxes, boxes)
+        self.assertEqual(result["frames_differing"], 0)
+        self.assertEqual(result["verdicts_changed"], 0)
+
+    def test_a_small_animal_difference_is_not_a_changed_verdict(self):
+        result = self.compare([{"category": "1", "conf": 0.85}],
+                              [{"category": "1", "conf": 0.86}])
+        self.assertEqual(result["frames_differing"], 1)
+        self.assertAlmostEqual(result["max_delta"], 0.01)
+        self.assertEqual(result["verdicts_changed"], 0)
+
+    def test_an_animal_crossing_the_line_is(self):
+        result = self.compare([{"category": "1", "conf": 0.801}],
+                              [{"category": "1", "conf": 0.799}])
+        self.assertEqual(result["verdicts_changed"], 1)
+
+    def test_a_person_crossing_the_line_counts_too(self):
+        # The ThinkPad-against-Mac case, verbatim.
+        result = self.compare([{"category": "2", "conf": 0.802}],
+                              [{"category": "2", "conf": 0.799}])
+        self.assertEqual(result["frames_differing"], 0)    # no animal box
+        self.assertEqual(result["verdicts_changed"], 1)
 
 
 class LoadingNewerCheckpoints(unittest.TestCase):

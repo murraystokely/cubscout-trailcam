@@ -47,8 +47,13 @@ the actual sin.
   --- 5,459 frames, three cameras, three animals. Two misses explained, and
   the shadow rule vindicated.
 - [2026-09-13 --- which machine should run the pass](2026-09-13-benchmarking-the-lab.md)
-  --- the Mac Studio is 36x the ThinkPad, batching made it worse, and no
-  machine disagreed with another about a single verdict.
+  --- the Mac Studio is 36x the ThinkPad, batching made it worse (and it
+  is batching itself, not the pipeline), redwood's failure was a Python
+  3.14 error message, and the machines disagree only at the threshold line.
+- [2026-09-13 --- the first passes on the Mac Studio](2026-09-13-first-passes-on-the-mac.md)
+  --- the archive works from the NAS and the ThinkPad's numbers reproduce;
+  MDv6-redwood against v5a on our frames: redwood sees people better and
+  sunlit paving worse, so v5a stays the reference.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each
   machine in the lab, on one fixed corpus, with the rules that make the
   numbers comparable.

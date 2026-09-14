@@ -618,12 +618,12 @@ def _compare_findings(first, second):
     max_delta = 0.0
     verdicts_changed = 0
 
-    for name in frames:
-        def best_animal(boxes):
-            return max((b["conf"] for b in boxes if b["category"] == "1"),
-                       default=0.0)
+    def best(boxes, category):
+        return max((b["conf"] for b in boxes if b["category"] == category),
+                   default=0.0)
 
-        a, b = best_animal(first[name]), best_animal(second[name])
+    for name in frames:
+        a, b = best(first[name], "1"), best(second[name], "1")
         delta = abs(a - b)
 
         if delta > 0:
@@ -631,7 +631,14 @@ def _compare_findings(first, second):
             max_delta = max(max_delta, delta)
 
         # The only difference anyone cares about: did the label change?
-        if (a >= config.ANIMAL_TRUTH) != (b >= config.ANIMAL_TRUTH):
+        # Both thresholds, not just the animal one.  The first version
+        # checked animals only and reported "no verdict changed" between
+        # the ThinkPad and the Mac -- while a person scored 0.802 on one
+        # and 0.799 on the other, straddling PERSON_TRUTH, and the full
+        # pass on the Mac duly found one person fewer.
+        p, q = best(first[name], "2"), best(second[name], "2")
+        if (a >= config.ANIMAL_TRUTH) != (b >= config.ANIMAL_TRUTH) \
+                or (p >= config.PERSON_TRUTH) != (q >= config.PERSON_TRUTH):
             verdicts_changed += 1
 
     return {
