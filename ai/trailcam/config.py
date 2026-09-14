@@ -61,10 +61,21 @@ MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
 #
 # What that does NOT show is that v5 beats v6.  Spruce is the smallest and
 # fastest of the v6 family; md1000-redwood is the flagship, and at 268 MB
-# and speed 1.0 it costs exactly what MDV5A costs to run.  It has never
-# been tried here, and the published comparisons tend to put it ahead of
-# v5a.  So the default below is convention, not evidence -- and settling it
-# is precisely milestone E4, "Rivals", in ../evaluation-design.md.
+# and speed 1.0 it costs exactly what MDV5A costs to run (measured: 0.072
+# s/frame for both, on the Mac Studio's GPU).
+#
+# Redwood was run over the same 5,673 frames on 13 September
+# (ai/results/2026-09-13-first-passes-on-the-mac.md).  On the animals the
+# two agree -- every disagreement is a crow within 0.05 of the 0.8 line.
+# Redwood is better on people: sixteen frames v5a scored 0.4-0.8 it puts
+# at 0.82-0.96, and the camera's own AI agrees they are people.  But it
+# scores sunlit paving on wildlifecam4 at 0.2-0.8 all day long, which
+# makes its uncertain band 1,246 frames against v5a's 461, and one
+# shadow-dappled burst reaches 0.80.  For a reference run whose job is to
+# label animals cheaply and hand a person a short list, that is the wrong
+# trade, so MDV5A stays.  On our patio, with our crows; not a general
+# verdict on the two models.  Milestone E4, "Rivals", in
+# ../evaluation-design.md, is where a wider one would come from.
 #
 # Switching is one word here, and the manifest records per frame which
 # detector saw it, so a mixed database stays honest -- `report` says so

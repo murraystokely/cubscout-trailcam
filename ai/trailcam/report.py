@@ -441,17 +441,25 @@ def compare(database, run_a, run_b):
     # Both runs' verdicts for every frame they have both seen, bucketed by
     # the same thresholds the confidence split uses.
     verdict = f"""
-        CASE WHEN {{}}.status <> 'ok' THEN 'error'
-             WHEN {{}}.max_animal_conf >= {config.ANIMAL_TRUTH} THEN 'animal'
-             WHEN {{}}.max_person_conf >= {config.PERSON_TRUTH} THEN 'person'
-             WHEN {{}}.max_animal_conf < {config.EMPTY_TRUTH} THEN 'empty'
+        CASE WHEN {{r}}.status <> 'ok' THEN 'error'
+             WHEN {{r}}.max_animal_conf >= {config.ANIMAL_TRUTH} THEN 'animal'
+             WHEN {{r}}.max_person_conf >= {config.PERSON_TRUTH} THEN 'person'
+             WHEN {{r}}.max_animal_conf < {config.EMPTY_TRUTH}
+              AND ({{r}}.max_person_conf IS NULL
+                   OR {{r}}.max_person_conf < {config.EMPTY_TRUTH})
+                                                          THEN 'empty'
              ELSE 'uncertain' END
     """
+    # The person clause on 'empty' matches the verdicts view.  Without it a
+    # frame with a 0.7 person and no animal read as "empty" here and as
+    # "uncertain" everywhere else, and the first v5a-against-redwood
+    # comparison duly reported sixteen frames going from empty to person
+    # that were nothing of the kind.
 
     rows = database.execute(
         f"""
-        SELECT {verdict.format('a', 'a', 'a', 'a')} AS verdict_a,
-               {verdict.format('b', 'b', 'b', 'b')} AS verdict_b,
+        SELECT {verdict.format(r='a')} AS verdict_a,
+               {verdict.format(r='b')} AS verdict_b,
                COUNT(*) AS n
           FROM frame_results a
           JOIN frame_results b ON b.frame_id = a.frame_id AND b.run_id = ?
@@ -493,8 +501,8 @@ def compare(database, run_a, run_b):
           JOIN frame_results b ON b.frame_id = a.frame_id AND b.run_id = ?
           JOIN frames f ON f.id = a.frame_id
          WHERE a.run_id = ?
-           AND {verdict.format('a', 'a', 'a', 'a')}
-            <> {verdict.format('b', 'b', 'b', 'b')}
+           AND {verdict.format(r='a')}
+            <> {verdict.format(r='b')}
          ORDER BY ABS(COALESCE(a.max_animal_conf, 0)
                     - COALESCE(b.max_animal_conf, 0)) DESC
          LIMIT 10
