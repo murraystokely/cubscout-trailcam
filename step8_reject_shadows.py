@@ -99,6 +99,41 @@ def code_fingerprint():
 CODE_VERSION = code_fingerprint()
 
 
+def boot_id():
+    """This boot's random id, so photographs can be grouped into runs.
+
+    A new one appears every time the Pi powers up, which is what tells a
+    single long deployment apart from a camera that rebooted twice in the
+    night.
+    """
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()[:8]
+    except Exception:
+        return "unknown"
+
+
+BOOT_ID = boot_id()
+
+
+def seconds_since_boot():
+    """How long this Pi has been up, in seconds.
+
+    Recorded in every photograph because a Zero 2 W has no clock of its
+    own: it starts each boot believing the time it last saved, so the
+    timestamps lie until the network corrects them, and a battery run has
+    to be reconstructed afterwards from the systemd journal.  This number
+    does not lie -- it comes from the kernel and starts at zero at power
+    on -- so the last photograph of a run says exactly how long the
+    battery lasted.
+    """
+    try:
+        with open("/proc/uptime") as f:
+            return round(float(f.read().split()[0]), 1)
+    except Exception:
+        return None
+
+
 def board_model():
     """Which Raspberry Pi is this?  Empty string if we cannot tell."""
     try:
@@ -906,6 +941,12 @@ def save_event(now, image, decision, measurements, ai_detections):
         "camera": CAMERA_NAME,
         "code": CODE_VERSION,
         "time": now.isoformat(),
+
+        # Which run this photograph belongs to, and how far into it we
+        # were.  See seconds_since_boot() for why the clock alone is not
+        # enough.
+        "boot": BOOT_ID,
+        "uptime_s": seconds_since_boot(),
 
         "image": {
             "file": os.path.basename(original_filename),
