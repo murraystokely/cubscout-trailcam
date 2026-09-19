@@ -93,7 +93,8 @@ def command_detect(options):
         camera=options.camera, day=options.day, limit=options.limit,
         new_run=options.new_run, crops=options.crops, model=options.model,
         threads=options.threads, retry_errors=options.retry_errors,
-        kind=None if options.kind == "all" else options.kind)
+        kind=None if options.kind == "all" else options.kind,
+        extend=options.extend)
 
     # Nothing to do is a success.  Every frame failing is not.
     return 1 if summary["frames"] and summary["errors"] == summary["frames"] \
@@ -301,6 +302,9 @@ def build_parser():
                              "unfinished one with the same settings")
     detect.add_argument("--retry-errors", action="store_true",
                         help="also re-try frames this run could not read")
+    detect.add_argument("--extend", type=int, metavar="RUN", default=None,
+                        help="reopen a finished run and add the frames it "
+                             "has not seen (its own model and settings)")
     detect.add_argument("--model", default=None,
                         help=f"detector name (default {config.DETECTOR})")
     detect.add_argument("--threads", type=int, default=None,
