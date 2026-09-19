@@ -68,35 +68,67 @@ def size_term(box):
     return min(1.0, area / config.SUBJECT_FULL_AREA) ** config.SIZE_EXPONENT
 
 
-def people_nearby(database, run_id):
-    """(camera, captured_at) of every frame with a person in it, for one run.
+def events_with_people(database, run_id):
+    """The stretches of each camera's day that had a person in them.
 
-    Used to keep an animal frame out of the shortlist when a person was on
-    the same camera within a minute of it: the detector called a child an
-    animal once, with no person box at all, and only the frames either
-    side of it said otherwise.
+    Every frame the run saw -- not just the animal ones -- is grouped into
+    events: same camera, no gap over EVENT_GAP_SECONDS.  An event is
+    tainted if any frame in it has a person at PERSON_NEARBY or above, and
+    the whole event is returned as a (camera, start, end) span.
+
+    Why the whole event and not a minute either side: a gardener on
+    wildlifecam10 tripped the camera 240 times in fourteen minutes and
+    MegaDetector put a person box on two of those frames.  In the rest it
+    scored him as an animal, or as nothing.  A person does not leave and
+    come back between two frames a second apart, so the presence of one
+    anywhere in a run of consecutive triggers means the run is about that
+    person.  (analysis-2026-09-15-wildlifecam10.md and
+    analysis-2026-09-18-wildlifecam4.md in the private analysis repo.)
     """
-    return [(row["camera"], datetime.fromisoformat(row["captured_at"]))
-            for row in database.execute(
-                """SELECT f.camera, f.captured_at FROM frame_results r
-                     JOIN frames f ON f.id = r.frame_id
-                    WHERE r.run_id = ? AND r.max_person_conf >= ?""",
-                (run_id, config.PERSON_NEARBY))]
+    rows = database.execute(
+        """SELECT f.camera, f.captured_at, r.max_person_conf
+             FROM frame_results r JOIN frames f ON f.id = r.frame_id
+            WHERE r.run_id = ? AND r.status = 'ok'
+            ORDER BY f.camera, f.captured_at""", (run_id,)).fetchall()
+
+    spans = []
+    current = None                      # [camera, start, end, has_person]
+
+    def close():
+        if current and current[3]:
+            spans.append((current[0], current[1], current[2]))
+
+    for row in rows:
+        when = datetime.fromisoformat(row["captured_at"])
+        person = (row["max_person_conf"] or 0.0) >= config.PERSON_NEARBY
+        if (current is None or row["camera"] != current[0]
+                or (when - current[2]).total_seconds()
+                > config.EVENT_GAP_SECONDS):
+            close()
+            current = [row["camera"], when, when, person]
+        else:
+            current[2] = when
+            current[3] = current[3] or person
+
+    close()
+    return spans
 
 
-def without_people(entries, people):
-    """Drop entries within EVENT_GAP_SECONDS of a person on the same camera."""
+def without_people(entries, spans):
+    """Drop entries that fall inside an event that had a person in it."""
     by_camera = {}
-    for camera, when in people:
-        by_camera.setdefault(camera, []).append(when)
+    for camera, start, end in spans:
+        by_camera.setdefault(camera, []).append((start, end))
 
     kept = []
     for entry in entries:
         when = datetime.fromisoformat(entry["captured_at"])
-        near = any(abs((when - other).total_seconds())
-                   <= config.EVENT_GAP_SECONDS
-                   for other in by_camera.get(entry["camera"], ()))
-        if not near:
+        margin = config.EVENT_GAP_SECONDS
+        tainted = any(
+            (start - when).total_seconds() <= margin
+            and (when - end).total_seconds() <= margin
+            for start, end in by_camera.get(entry["camera"], ()))
+        if not tainted:
             kept.append(entry)
     return kept
 
@@ -205,14 +237,15 @@ def build(database, run_id=None, kind=None, top=30, destination=None,
         return []
 
     found = candidates(database, run["id"], kind=kind)
-    entries = score(without_people(found, people_nearby(database, run["id"])))
+    entries = score(without_people(found,
+                                   events_with_people(database, run["id"])))
     ranked = best_of_each_visit(entries)
 
     if not quiet:
         print(f"Run {run['id']} ({run['name']}): {len(found)} animal "
               f"frames at >= {config.ANIMAL_TRUTH}, "
-              f"{len(found) - len(entries)} left out for being within a "
-              f"minute of a person, {len(ranked)} visits.\n")
+              f"{len(found) - len(entries)} left out for being in an event "
+              f"with a person in it, {len(ranked)} visits.\n")
         print(f"{'#':>3}  {'score':>5}  {'conf':>4}  {'size':>5}  "
               f"{'sharp':>5}  {'frames':>6}  frame")
         for rank, entry in enumerate(ranked[:top], start=1):

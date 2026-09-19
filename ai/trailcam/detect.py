@@ -47,7 +47,7 @@ def _crop_destination(frame_path, index, run_id):
 
 def run(camera=None, day=None, limit=None, new_run=False, crops=None,
         model=None, threads=None, quiet=False, retry_errors=False,
-        kind=None):
+        kind=None, extend=None):
     """Run the detector over every frame this run has not seen yet.
 
     Returns a small summary dictionary.  Safe to call again at any time:
@@ -71,8 +71,25 @@ def run(camera=None, day=None, limit=None, new_run=False, crops=None,
         "crops": bool(write_crops),
     }
 
-    run_id, resumed = manifest_module.resume_or_start_run(
-        database, "detector", name, params=parameters, force_new=new_run)
+    if extend is not None:
+        # Reopen a finished run and give it the frames that arrived since.
+        # A run is "per execution", but the thing anyone compares or ranks
+        # is "this model over the whole archive", and after every sync
+        # that means the same run growing rather than a second run that
+        # covers only the new days.  The model and settings are the run's
+        # own, not the caller's, so what it holds stays one answer.
+        row = database.execute("SELECT * FROM runs WHERE id = ?",
+                               (extend,)).fetchone()
+        if row is None or row["kind"] != "detector":
+            raise SystemExit(f"No detector run {extend} to extend.")
+        name = row["name"]
+        database.execute("UPDATE runs SET finished_at = NULL WHERE id = ?",
+                         (extend,))
+        database.commit()
+        run_id, resumed = extend, True
+    else:
+        run_id, resumed = manifest_module.resume_or_start_run(
+            database, "detector", name, params=parameters, force_new=new_run)
 
     queue = manifest_module.frames_to_detect(
         database, run_id, camera=camera, day=day, limit=limit,

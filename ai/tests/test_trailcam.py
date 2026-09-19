@@ -928,15 +928,59 @@ class RankingTheShortlist(unittest.TestCase):
         self.assertGreater(squirrel, 0.45)
         self.assertLess(squirrel, 0.55)
 
-    def test_an_animal_within_a_minute_of_a_person_is_left_out(self):
+    def test_an_animal_in_an_event_with_a_person_is_left_out(self):
         child_called_animal = self.box(when="2026-09-04T13:56:18")
         crow_later = self.box(when="2026-09-04T14:30:00")
         other_camera = self.box(when="2026-09-04T13:56:18", camera="far")
-        people = [("cam", datetime(2026, 9, 4, 13, 56, 34))]
+        # The event that had the person in it ran 13:55 to 14:10.
+        spans = [("cam", datetime(2026, 9, 4, 13, 55, 0),
+                  datetime(2026, 9, 4, 14, 10, 0))]
 
         kept = shortlist.without_people(
-            [child_called_animal, crow_later, other_camera], people)
+            [child_called_animal, crow_later, other_camera], spans)
         self.assertEqual(kept, [crow_later, other_camera])
+
+    def test_a_whole_event_is_tainted_by_one_person_frame(self):
+        """The gardener: 240 triggers, two with a person box."""
+        directory = Path(tempfile.mkdtemp())
+        try:
+            database = manifest.open_manifest(directory / "t.sqlite")
+            frames = []
+            for second in range(0, 60, 2):          # thirty frames, 2 s apart
+                frames.append(bursts.Frame(
+                    camera="cam", day="2026-09-13",
+                    relative_path=f"cam/2026-09-13/1611{second:02d}.jpg",
+                    absolute_path=Path("x"),
+                    captured_at=datetime(2026, 9, 13, 16, 11, second),
+                    camera_decision=None, mean_luma=None, largest_area=None,
+                    code_version=None, metrics=None, kind="photo"))
+            # And a crow an hour later, on its own.
+            frames.append(frames[0]._replace(
+                relative_path="cam/2026-09-13/171100.jpg",
+                captured_at=datetime(2026, 9, 13, 17, 11, 0)))
+            manifest.add_frames(database, frames)
+            run = manifest.start_run(database, "detector", "MDV5A")
+            ids = [r["id"] for r in database.execute(
+                "SELECT id FROM frames ORDER BY captured_at")]
+            for n, frame_id in enumerate(ids):
+                boxes = [Box("animal", 0.9, 0.4, 0.4, 0.1, 0.1, None)]
+                if n == 10:                          # one frame says person
+                    boxes.append(Box("person", 0.35, 0.1, 0.1, 0.3, 0.6, None))
+                manifest.record_detections(database, run, frame_id, boxes)
+            database.commit()
+
+            spans = shortlist.events_with_people(database, run)
+            self.assertEqual(len(spans), 1)
+            self.assertEqual(spans[0][1], datetime(2026, 9, 13, 16, 11, 0))
+            self.assertEqual(spans[0][2], datetime(2026, 9, 13, 16, 11, 58))
+
+            found = shortlist.candidates(database, run)
+            kept = shortlist.without_people(found, spans)
+            self.assertEqual([e["path"] for e in kept],
+                             ["cam/2026-09-13/171100.jpg"])
+            database.close()
+        finally:
+            shutil.rmtree(directory)
 
     def test_blur_lowers_the_sharpness(self):
         try:

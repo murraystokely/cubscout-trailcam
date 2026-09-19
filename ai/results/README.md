@@ -60,6 +60,14 @@ the actual sin.
   birds, and a ranking that hid every one of the squirrels until a person
   looked. wildlifecam12 has no animal at 0.8 in 7,006 photographs, and
   squirrels at 0.13.
+- [2026-09-19 --- the September cards, with the model we trust](2026-09-19-the-september-cards-with-mdv5a.md)
+  --- 16,921 new frames in 22 minutes; 90 animal visits on five cameras,
+  squirrels now as common as crows; wildlifecam13 is pointed at a feeder.
+- [2026-09-19 --- v5a against v6 redwood, over everything](2026-09-19-v5a-against-redwood-over-everything.md)
+  --- 58,099 frames each; at 0.8 both are precise and each finds real
+  animals the other misses (redwood about thirty more visits); redwood is
+  the better person detector and the noisier one on sunlit paving; v5a
+  stays the reference, the gallery should use both.
 - [`shortlists/`](shortlists/) --- the ranked "best animal pictures" list
   each pass produced, one CSV per run.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each

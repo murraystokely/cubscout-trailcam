@@ -192,10 +192,17 @@ CLIPPED_PENALTY = 0.35
 # A frame with a person in it is not a wildlife picture, and neither is
 # the frame two seconds later where the detector happened to call the same
 # child an animal at 0.80 with no person box at all (wildlifecam4,
-# 2026-09-04 13:56).  People do not teleport: any animal frame within
-# EVENT_GAP_SECONDS of a person at or above this confidence, on the same
-# camera, is left out of the shortlist.
-PERSON_NEARBY = 0.5
+# 2026-09-04 13:56).  People do not teleport: if any frame in a run of
+# consecutive triggers (no gap over EVENT_GAP_SECONDS) has a person at or
+# above this confidence, every animal frame in that run is left out of the
+# shortlist.
+#
+# 0.3, not 0.5: a gardener on wildlifecam10 tripped the camera 240 times
+# in fourteen minutes and got a person box above 0.5 in two of them.  The
+# cost of a low bar here is a crow left out because somebody walked past
+# a minute earlier, which is nothing; the cost of a high bar is a person
+# on a public web page.
+PERSON_NEARBY = 0.3
 
 # Sharpness is the variance of the Laplacian over the animal box.  Rather
 # than pick an absolute number for a quantity that depends on the lens and
