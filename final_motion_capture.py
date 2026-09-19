@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+import socket
 import sys
 import shutil
 import time
@@ -97,6 +100,106 @@ if (ai_camera_attached()
 MAIN_SIZE = (2304, 1296)
 LORES_SIZE = (640, 480)
 
+# How much of the small frame has to change before this is worth a
+# photograph.  It was written inline as a bare 20000 for a month; it is
+# named here because the sidecar records it, and a number a photograph
+# reports should be a number you can find.
+CHANGED_PIXELS_TO_SAVE = 20000
+
+# ------------------------------------------------------------
+# A JSON sidecar beside every photograph
+# ------------------------------------------------------------
+#
+# step8 has always written one of these next to each picture, and every
+# analysis on the laptop reads them: which build kept the photograph,
+# which rule fired, how big the moving thing was.  This program wrote
+# bare JPEGs, so a camera with an ordinary Camera Module produced
+# pictures that could not be traced back to anything -- including the
+# uptime that tells us how long a battery lasted.
+#
+# So it writes one too.  Same file name, same shape, fewer fields: there
+# is no AI here to report, and the motion numbers are the simple ones
+# this program actually measures.  The laptop tools read sidecars with
+# .get(), so the missing sections cost nothing.
+
+CAMERA_NAME = socket.gethostname()
+
+
+def code_fingerprint():
+    """A short hash of this very file, recorded in every photograph."""
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+
+CODE_VERSION = code_fingerprint()
+
+
+def boot_id():
+    """This boot's random id, so photographs group into runs."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()[:8]
+    except Exception:
+        return "unknown"
+
+
+BOOT_ID = boot_id()
+
+
+def seconds_since_boot():
+    """How long this Pi has been up.
+
+    A Zero 2 W has no clock of its own: it starts each boot believing
+    the time it last saved, so the timestamps lie until the network
+    corrects them.  This number comes from the kernel and starts at zero
+    at power on, so the largest value in a run says how long the battery
+    lasted.
+    """
+    try:
+        with open("/proc/uptime") as f:
+            return round(float(f.read().split()[0]), 1)
+    except Exception:
+        return None
+
+
+def write_sidecar(photo_path, now, changed_pixels):
+    """Describe one photograph in JSON, beside the photograph."""
+    information = {
+        "camera": CAMERA_NAME,
+        "code": CODE_VERSION,
+        "time": now.isoformat(),
+
+        "boot": BOOT_ID,
+        "uptime_s": seconds_since_boot(),
+
+        "image": {
+            "file": os.path.basename(photo_path),
+            "width": MAIN_SIZE[0],
+            "height": MAIN_SIZE[1],
+        },
+
+        # This program has one rule, so there is one trigger.  The name
+        # matches nothing in step8 on purpose: a photograph should say
+        # which program's rules kept it.
+        "trigger": "changed pixels",
+
+        "motion": {
+            "changed_pixels": int(changed_pixels),
+            "threshold": CHANGED_PIXELS_TO_SAVE,
+            "lores_size": list(LORES_SIZE),
+        },
+    }
+    try:
+        with open(os.path.splitext(photo_path)[0] + ".json", "w") as f:
+            json.dump(information, f, indent=2)
+    except OSError as problem:
+        # A sidecar is never worth losing a photograph over.
+        print(f"could not write the sidecar: {problem}")
+
+
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(
     main={"size": MAIN_SIZE, "format": "RGB888"},
@@ -149,12 +252,13 @@ while True:
     #
     # if is too sensitive try bigger numbers below
     # if score > 5000000:
-    if changed_pixels > 20000:
+    if changed_pixels > CHANGED_PIXELS_TO_SAVE:
         now = datetime.now()
         day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
         os.makedirs(day_directory, exist_ok=True)
         filename = f"{day_directory}/{now.strftime('%H%M%S')}.jpg"
         picam2.capture_file(filename)          # from "main": the big one
+        write_sidecar(filename, now, changed_pixels)
         print(f"motion detected! Wrote {filename}.")
 
 
