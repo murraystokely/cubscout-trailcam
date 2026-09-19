@@ -70,9 +70,43 @@ if (ai_camera_attached()
     os.execv(sys.executable,
              [sys.executable, "-u", AI_SCRIPT] + sys.argv[1:])
 
+# ------------------------------------------------------------
+# Ask the camera for a proper photograph, not a preview
+# ------------------------------------------------------------
+#
+# For a month this program started the camera with no settings at all,
+# and Picamera2's default is a 640x480 preview -- the size you would use
+# to watch a video call, not to photograph a squirrel.  Nobody noticed,
+# because the motion detection works fine at that size.  Then the
+# pictures were put beside the AI Camera's: the same squirrel was 300
+# pixels long in one and 40 in the other.
+#
+# So the camera now runs two streams at once, the way step8 does:
+#
+#   main    the photograph we save.  Big.
+#   lores   a small copy the camera hardware makes for free.  The motion
+#           detection reads this one, so watching for movement costs the
+#           same as it always did no matter how big the photograph is.
+#
+# 2304x1296 is the size the Camera Module 3's sensor produces natively
+# when it groups its pixels in twos (it is a 4608x2592 sensor), so the
+# camera does no resizing and the picture uses the whole width of the
+# lens.  It is small enough for a Pi Zero 2 W with two buffers.  If you
+# want the very largest picture the sensor can take, 4608x2592 works on
+# a Pi 4 or 5, but a Zero 2 W will run out of memory.
+MAIN_SIZE = (2304, 1296)
+LORES_SIZE = (640, 480)
+
 picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(
+    main={"size": MAIN_SIZE, "format": "RGB888"},
+    lores={"size": LORES_SIZE, "format": "YUV420"},
+    buffer_count=2,
+))
 picam2.start()
 time.sleep(2)
+print(f"Photographs will be {MAIN_SIZE[0]}x{MAIN_SIZE[1]}; "
+      f"watching for motion at {LORES_SIZE[0]}x{LORES_SIZE[1]}.")
 print("Watching for motion...")
 last_image = None
 while True:
@@ -85,8 +119,12 @@ while True:
         print("Stopping before the disk fills completely.")
         break
     #main code
-    image = picam2.capture_array()
-    gray = cv2.cvtColor(image,cv2.COLOR_RGB2GRAY)
+    #
+    # The small stream arrives as YUV420: the grey picture first, then
+    # the colour information squashed underneath it.  The top 480 rows
+    # ARE the grey image, so there is nothing to convert.
+    lores = picam2.capture_array("lores")
+    gray = lores[:LORES_SIZE[1], :LORES_SIZE[0]]
     if last_image is None:
         print("first image.")
         last_image = gray
@@ -116,7 +154,7 @@ while True:
         day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
         os.makedirs(day_directory, exist_ok=True)
         filename = f"{day_directory}/{now.strftime('%H%M%S')}.jpg"
-        picam2.capture_file(filename)
+        picam2.capture_file(filename)          # from "main": the big one
         print(f"motion detected! Wrote {filename}.")
 
 

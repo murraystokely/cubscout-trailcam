@@ -171,6 +171,14 @@ exactly why it lives in its own file. **This is the one that gets deployed.**
 The final program combines the lessons from the previous programs into
 the deployable wildlife camera.
 
+It runs the camera with two streams, like step8 does: a small 640x480
+one that the motion detection watches, and a big 2304x1296 one that gets
+saved when something moves. For a month it asked for no size at all, and
+Picamera2's default is a 640x480 preview --- fine for spotting movement,
+useless for a photograph of a squirrel. Nobody noticed until the pictures
+were put beside the AI Camera's, where the same squirrel was 300 pixels
+long instead of 40.
+
 It:
 
 -   Starts the camera.
@@ -545,7 +553,10 @@ unnecessarily.
 The standard **Raspberry Pi Camera Module 3** is the recommended camera.
 
 It provides a good-quality camera, autofocus, and direct support through
-Raspberry Pi's camera software and Picamera2.
+Raspberry Pi's camera software and Picamera2. Its sensor is 4608x2592;
+`final_motion_capture.py` saves photographs at 2304x1296, the size the
+sensor produces natively at half resolution, which a Pi Zero 2 W can
+hold in memory.
 
 Pay careful attention to the ribbon cable and connector type. Different
 Raspberry Pi models use different camera connector sizes, so make sure
