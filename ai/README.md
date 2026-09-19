@@ -68,7 +68,15 @@ export WILDLIFE_PHOTOS=/Volumes/datasets/trailcam/photos   # the NAS
 .venv/bin/python -m trailcam scan --kind photo   # and the photographs
 .venv/bin/python -m trailcam detect --kind photo
 .venv/bin/python -m trailcam shortlist           # the best animal pictures
+
+.venv/bin/python -m trailcam scan --kind all     # after the next sync:
+.venv/bin/python -m trailcam detect --extend 9   # same run, only the new frames
 ```
+
+`--extend` reopens a finished run and gives it the frames it has not
+seen. A run is per execution, but the thing anyone ranks or compares is
+"this model over the whole archive", and after every sync that means the
+same run growing rather than a second run that covers only the new days.
 
 `scan` is cheap and safe to rerun after every sync; it adds rows for frames
 that arrived since last time and touches nothing else.
