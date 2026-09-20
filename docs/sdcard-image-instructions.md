@@ -516,7 +516,7 @@ ls -l /mnt/etc/ssh/ssh_host_*
 Do **not** remove `/home/webelos/.ssh/authorized_keys`; those are the
 laptop's login authorization keys and should remain on every clone.
 
-## 20. Reset the machine ID
+## 20. Reset the machine ID, and the master's past
 
 Every clone carries a copy of the master's `/etc/machine-id`, the identifier
 systemd assigns to an installation. Clear it so each Pi generates its own on
@@ -560,6 +560,58 @@ Each camera should report a different value. A duplicated machine ID makes
 systemd journal entries from different cameras indistinguishable, and any
 DHCP client configured to derive its identifier from it will hand two
 cameras the same lease.
+
+### Clear the master's journals
+
+`/var/log/journal/` holds one directory per machine ID, and the clone has
+just been given a fresh one --- so from its first boot it writes into a *new*
+directory beside the master's, which came along inside the image and never
+goes away. `journalctl` merges every directory it finds and sorts the result
+by time, so `--list-boots` on a newly cloned card answers with the master's
+deployments mixed in among this card's own, with nothing to tell them apart.
+
+```bash
+sudo rm -rf /mnt/var/log/journal/*
+```
+
+This matters more than it looks. A Pi Zero 2 W has no clock of its own, so
+establishing when a camera powered on means reading exactly that boot list
+and correcting it against the first clock synchronisation --- and a boot
+belonging to a different camera is indistinguishable from one of this card's.
+
+### Reset the clock the Pi restores at boot
+
+```bash
+sudo touch /mnt/var/lib/systemd/timesync/clock
+```
+
+The file is empty; what systemd reads is its **modification time**. At boot,
+with no network and no clock of its own, the Pi advances its system clock to
+that timestamp. Carried over from the master it is the moment the master was
+last switched off --- so a card cloned in October starts life believing it is
+that day, and files its first photographs under that date until
+`systemd-timesyncd` reaches a time server. Touching it makes the floor the
+day the clone was made, which is the earliest date this card could honestly
+claim.
+
+### Record where the image came from
+
+Clearing the journal is right for everything that reads it, and wrong for
+knowing what a card is. So write that down once, in the one place it stays
+true:
+
+```bash
+printf 'cloned_from=%s\ncloned_at=%s\ncloned_as=%s\n' \
+    webelos-wildlifecam.img "$(date -u +%Y-%m-%dT%H:%M:%SZ)" wildlifecam7 \
+    | sudo tee /mnt/etc/wildlife-clone
+```
+
+[`clone_image.sh`](../clone/clone_image.sh) writes this for you. Note what it
+does **not** record: anything that changes from one deployment to the next ---
+which battery pack is under the camera, where it is pointed --- has no
+business on the card, because nothing will keep it up to date. A file that is
+wrong more often than it is right is worse than no file. This one is written
+once and is true for the life of the card.
 
 ## 21. Expand the filesystem on a larger card
 
@@ -720,6 +772,11 @@ For each new card:
 10. Run `sudo ssh-keygen -A -f /mnt`.
 11. Verify the new SSH host keys.
 12. Empty `/mnt/etc/machine-id`.
+    - `sudo rm -rf /mnt/var/log/journal/*` --- the master's logs, which would
+      otherwise interleave with this card's own boots.
+    - `sudo touch /mnt/var/lib/systemd/timesync/clock` --- so the clone does
+      not boot believing it is the day the master stopped.
+    - Write `/mnt/etc/wildlife-clone` saying which image this came from.
 13. `sync`.
 14. Unmount `/mnt`.
 15. Eject the card.

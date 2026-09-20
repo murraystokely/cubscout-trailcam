@@ -69,7 +69,12 @@ It automates *Part 4 --- Make each clone unique* of
 - deletes the master's SSH host keys and generates a fresh set, so every
   camera has its own SSH identity;
 - empties `/etc/machine-id` (and fixes the D-Bus copy) so each Pi mints its
-  own machine ID on first boot.
+  own machine ID on first boot;
+- clears the master's systemd journals, so `journalctl --list-boots` on the
+  clone shows this card's own boots and nobody else's;
+- resets the saved clock the Pi restores at boot, so a clone does not start
+  life believing it is the day the master was last switched off;
+- records where the image came from in `/etc/wildlife-clone`.
 
 By design it **never writes to an SD card** --- it only reads the master and
 writes a new image file, so it cannot `dd` over the wrong disk. Burn the

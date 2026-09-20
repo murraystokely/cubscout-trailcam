@@ -12,7 +12,12 @@
 #   * delete the copied SSH host keys and generate fresh ones, so every camera
 #     has its own SSH identity;
 #   * empty /etc/machine-id (and fix the D-Bus copy) so each Pi mints its own
-#     machine ID on first boot.
+#     machine ID on first boot;
+#   * clear the master's systemd journals, so `journalctl --list-boots` on the
+#     clone shows this card's own boots and nobody else's;
+#   * reset the saved clock the Pi restores at boot, so a clone does not start
+#     life believing it is the day the master was last switched off;
+#   * record where the image came from in /etc/wildlife-clone.
 #
 # It deliberately does NOT write to an SD card: it only ever reads the master
 # and writes a new image file, so it cannot dd over the wrong disk. Burn the
@@ -249,6 +254,53 @@ if [ -e "$dbus_id" ] && [ ! -L "$dbus_id" ]; then
     ln -s /etc/machine-id "$dbus_id"
 fi
 
+msg "forgetting the master's history"
+# Everything above gives the clone a new identity. This gives it a new past.
+#
+# A clone mints a fresh machine-id on first boot and journald files its logs
+# under that id -- in a NEW directory beside the master's, which came along in
+# the image and never goes away. journalctl merges every directory it finds
+# and sorts the result by time, so `--list-boots` on a freshly cloned card
+# answers with the master's deployments interleaved with this card's own, and
+# a boot belonging to another camera looks exactly like one of this camera's.
+#
+# That is not cosmetic here. Working out when a camera powered on means
+# reading precisely that list, because a Zero 2 W has no clock to trust.
+#
+# ${MNT:?} rather than $MNT: an unset variable would turn the line below into
+# rm -rf /var/log/journal/* on the laptop, and this is not the place to find
+# that out.
+if [ -d "$MNT/var/log/journal" ]; then
+    rm -rf -- "${MNT:?}"/var/log/journal/*
+fi
+
+# The Pi has no real-time clock, so at boot systemd advances the clock to the
+# MODIFICATION TIME of this file -- not its contents, which are empty. Carried
+# over from the master, that is the moment the master was last switched off: a
+# card cloned in October would start life believing it is the day the master
+# stopped, and file its first photographs under that date until timesyncd
+# reaches a server. Touching it makes the floor the day the clone was made,
+# which is the earliest date this card can honestly claim.
+clock_file="$MNT/var/lib/systemd/timesync/clock"
+if [ -e "$clock_file" ]; then
+    touch "$clock_file"
+fi
+
+# Clearing the journal is right for everything that reads it, and wrong for
+# knowing where a card came from -- so write that down in the one place it
+# stays true. This is recorded once, by the program that knows the answer, and
+# holds for the life of the card. Facts that change with every deployment --
+# which battery is under it, where it is pointed -- deliberately do not belong
+# here, because a card cannot keep them honest.
+cat > "$MNT/etc/wildlife-clone" <<EOF
+# Written by clone/clone_image.sh when this image was personalized.
+# The master's journals were cleared at the same time, so anything now in
+# /var/log/journal belongs to this card alone.
+cloned_from=$(basename -- "$MASTER")
+cloned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cloned_as=$HOSTNAME_NEW
+EOF
+
 # --------------------------------------------------------------------------
 # Verify and finish
 # --------------------------------------------------------------------------
@@ -259,6 +311,9 @@ printf '    /etc/hostname   : %s\n' "$(cat "$MNT/etc/hostname")"
 printf '    /etc/hosts      : %s\n' "$(grep -E '127\.0\.1\.1' "$MNT/etc/hosts" 2>/dev/null || echo '(no 127.0.1.1 line)')"
 printf '    host keys       : %s new key(s)\n' "$(ls "$MNT"/etc/ssh/ssh_host_*_key 2>/dev/null | wc -l)"
 printf '    machine-id size : %s byte(s) (should be 0)\n' "$(stat -c %s "$MNT/etc/machine-id")"
+printf '    journals        : %s left from the master (should be 0)\n' "$(ls "$MNT/var/log/journal" 2>/dev/null | wc -l)"
+printf '    saved clock     : %s\n' "$(date -r "$clock_file" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '(no clock file in the image)')"
+printf '    provenance      : /etc/wildlife-clone, from %s\n' "$(basename -- "$MASTER")"
 
 # Unmount and detach before touching the raw image again.
 detach
