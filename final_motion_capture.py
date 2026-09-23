@@ -104,7 +104,27 @@ LORES_SIZE = (640, 480)
 # photograph.  It was written inline as a bare 20000 for a month; it is
 # named here because the sidecar records it, and a number a photograph
 # reports should be a number you can find.
-CHANGED_PIXELS_TO_SAVE = 20000
+#
+# Why 15000 and not the 20000 it was: that number was picked when this
+# program watched a 4:3 picture.  MAIN_SIZE above now asks the Module 3
+# for its native 16:9 frame, which takes in about a third more of the
+# garden from side to side -- so the same squirrel, standing in the same
+# place, now covers about a quarter fewer pixels.  15000 is 20000 with
+# that quarter taken off.  Same animal, same answer.
+#
+# The cards agree.  Across 23,411 motion checks on a still scene
+# (wildlifecam13, 22-23 September, thirteen hours) the biggest reading an
+# empty frame ever produced was 7,187, and 999 checks in every 1,000 came
+# in under 4,156.  So 15000 is still more than twice the worst an empty
+# frame has managed, and over those thirteen hours it would have fired on
+# none of them.  On a windy scene full of leaves it takes about a third
+# more photographs than 20000 did -- that is the price of seeing the
+# smaller animals.
+#
+# Every photograph records this number in its sidecar, so after a
+# deployment you can count how many frames scraped in just above it and
+# decide whether it is still the right number.
+CHANGED_PIXELS_TO_SAVE = 15000
 
 # ------------------------------------------------------------
 # A JSON sidecar beside every photograph
