@@ -65,9 +65,22 @@ def _read_sidecar(path):
 
 
 def _parse_timestamp(day, filename):
-    """103415.jpg + 2026-08-24 -> datetime, to the second."""
-    return datetime.strptime(f"{day} {Path(filename).stem}",
-                             "%Y-%m-%d %H%M%S")
+    """103415.jpg -> to the second; 103415_287.jpg -> to the millisecond.
+
+    Both shapes are in the archive.  step8 and the older plain loop named
+    photographs to the second, which was fine at their cadence; step9
+    looks four times a second, so it carries milliseconds the way the
+    training bursts always have -- otherwise two photographs in the same
+    second land on the same name and the first one is lost.
+
+    `_annotated.jpg` never reaches here: find_photos drops those first.
+    """
+    stem = Path(filename).stem
+    if "_" in stem:
+        clock, milliseconds = stem.split("_", 1)
+        return datetime.strptime(f"{day} {clock}.{milliseconds}",
+                                 "%Y-%m-%d %H%M%S.%f")
+    return datetime.strptime(f"{day} {stem}", "%Y-%m-%d %H%M%S")
 
 
 def find_photos(camera=None, day=None, photo_root=None):
