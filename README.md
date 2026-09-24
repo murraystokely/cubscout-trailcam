@@ -17,6 +17,35 @@ understand what changed and why.
 The Python examples are intentionally split into separate scripts so
 each one introduces only a small number of new ideas.
 
+### Step 0 --- Before the camera: names for things
+
+[`step0_intro.py`](step0_intro.py)
+
+Written by Nolan, and kept exactly as he wrote it. Step 1 already assumes
+you know what a variable is; this is the program that comes before that
+assumption.
+
+Concepts introduced:
+
+-   Putting a value in a variable and giving it a name
+-   `print`
+-   Adding two strings together
+
+The last line is the one worth stopping on:
+
+``` python
+print(message + message2 + message3)
+```
+
+`message` holds `'67'`, so a reader expecting arithmetic gets `67nolanhello
+nolan` instead. Nothing was added up, because nothing here is a number ---
+the quotes made them all text. That is a real lesson about types arriving
+in one line, and it lands better from a program a Scout wrote than from an
+explanation.
+
+It lived on wildlifecam2's card for six weeks and nowhere else, which is a
+poor place to keep the first program anybody runs.
+
 ### Step 1 --- Take the first photo
 
 [`step1_firstphoto.py`](step1_firstphoto.py)
