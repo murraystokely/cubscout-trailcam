@@ -35,19 +35,41 @@ was taken, and nothing has to be reconstructed later. It costs one line in
 step8 and one in the checklist, and it does not help with the 58,000
 frames already on the NAS or with wildlifecam13, which writes no sidecars.
 
-**2. A deployments table, kept by hand.** A CSV in the repo:
+**2. A deployments table, kept by hand.** A CSV in the repo, keyed by the
+camera's **boot id**, not by dates:
 
 ```
-camera,site,from,to
-wildlifecam4,backyard,2026-08-18,
-wildlifecam10,backyard,2026-08-27,2026-09-19
-wildlifecam10,grant-park,2026-09-26,2026-09-28
+camera,boot,site
+wildlifecam10,91b8124e,backyard
+wildlifecam10,3f0c22a1,grant-park
 ```
 
-`scan` reads it and stamps each frame with the site whose deployment
-covers its camera and time. This is the only way the existing archive
-gets a site, and the fallback for any camera that does not write one.
-An open `to` means "still there".
+`scan` reads it and stamps each frame with the site of the boot that took
+it. This is the only way the existing archive gets a site, and the
+fallback for any camera that does not write one.
+
+Why boots and not dates: a Pi Zero has no battery-backed clock. It comes
+up on whatever time it last saved and stays there until it finds a
+network, which on a fence post is never. The 24 September cards filed a
+two-day run under a week-old folder. So `<camera>/<YYYY-MM-DD>/` is the
+camera's opinion, `captured_at` inherits it, and a deployments table keyed
+by date would file a campout under the back garden. `boot` is an eight
+character random id that changes at every power-up and is written into
+every sidecar since `797880a7b017`; frames sharing one are one continuous
+run, ordered by `uptime_s`, whatever the clock said. Cameras that predate
+the field (wildlifecam1, the old loop) get a date range as a last resort,
+flagged as such.
+
+This has two knock-on effects that PR 32 did not see coming:
+
+- `frames` should carry `boot` and `uptime_s` alongside `captured_at`, so
+  that visits, the person-event grouping and the gallery's ordering can
+  use the number that does not lie. Within one boot `captured_at` is
+  steady and the existing grouping is right; across boots and cameras it
+  is not.
+- The gallery caption should say "camera's clock" next to the date until
+  the site and boot are known, and never invite a reader to trust a
+  folder name.
 
 **3. The archive layout.** `photos/<site>/<camera>/<day>/`. Rejected: it
 would mean reorganising 167,000 files that the NAS README says are never

@@ -73,6 +73,11 @@ the actual sin.
   crop opened a grey squirrel, and 107 of them in a single 44-minute morning
   before the battery went flat. The afternoon before, the 16:00 hour took
   240 photographs with an animal in none of them.
+- [2026-09-24 --- five cards before the campout, and the 599 px floor](2026-09-24-five-cards-and-the-599-px-floor.md)
+  --- one squirrel in 25,000 photographs; the new floor and darkness gate
+  cost nothing on this data, but one squirrel cannot set a number and the
+  archive's 49 px crow and the deer-at-30-m geometry say 599 is too high
+  for a park.
 - [`shortlists/`](shortlists/) --- the ranked "best animal pictures" list
   each pass produced, one CSV per run.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each

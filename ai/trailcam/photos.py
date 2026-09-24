@@ -52,7 +52,25 @@ MOTION_FIELDS = {
     "confirmations": "confirmations",
     "exposure_us": "exposure_us",
     "analogue_gain": "analogue_gain",
+    # step 9 (the plain cameras) writes a smaller block with its own
+    # names.  Its blob floor and pixel counts are what a threshold
+    # question joins on, so they travel too.
+    "blob_threshold": "blob_threshold",
+    "changed_pixels": "changed_pixels",
+    "noise": "noise",
 }
+
+# step 8 calls the biggest blob one thing and step 9 another.  Either
+# way it is the number the motion rules compared with their floor, and
+# it goes in `largest_area`, so "was this animal's blob under the floor"
+# is one SQL query rather than an evening reading sidecars.
+BLOB_AREA_FIELDS = ("largest_blob_area", "biggest_blob")
+
+# A Pi Zero has no battery-backed clock, so `time` in a sidecar can be a
+# week stale.  `boot` is a random id per power-up and `uptime_s` the
+# seconds since; between them they order frames truthfully whatever the
+# clock said.  Kept in the metrics until `frames` grows columns for them.
+RUN_FIELDS = ("boot", "uptime_s")
 
 
 def _read_sidecar(path):
@@ -130,6 +148,9 @@ def find_photos(camera=None, day=None, photo_root=None):
                 metrics = {ours: motion[theirs]
                            for theirs, ours in MOTION_FIELDS.items()
                            if motion.get(theirs) is not None}
+                for field in RUN_FIELDS:
+                    if sidecar.get(field) is not None:
+                        metrics[field] = sidecar[field]
 
                 # The on-board model's best guess rides along, as it does
                 # for a training frame, because "the camera thought it
@@ -142,7 +163,8 @@ def find_photos(camera=None, day=None, photo_root=None):
                     metrics["ai_class"] = best.get("class")
                     metrics["ai_confidence"] = best.get("confidence")
 
-                area = motion.get("largest_blob_area")
+                area = next((motion[f] for f in BLOB_AREA_FIELDS
+                             if motion.get(f) is not None), None)
 
                 frames.append(Frame(
                     camera=camera_directory.name,

@@ -743,6 +743,29 @@ class FindingPhotographs(unittest.TestCase):
         frame = bursts.find_frames(photo_root=self.root)[0]
         self.assertEqual(frame.kind, "training")
 
+    def test_a_step_9_sidecar_gives_up_its_blob_and_its_boot(self):
+        """The plain cameras name things differently and have no clock."""
+        (self.day / "133137.jpg").write_bytes(b"jpeg")
+        (self.day / "133137.json").write_text(json.dumps({
+            "camera": "wildlifecam9", "code": "bf0a63149ef4",
+            "time": "2026-09-23T13:31:37.650692",
+            "boot": "91b8124e", "uptime_s": 47.5,
+            "trigger": "biggest blob",
+            "motion": {"biggest_blob": 4912, "blob_threshold": 301,
+                       "changed_pixels": 9302, "pixel_threshold": 25,
+                       "noise": 0.0, "mean_luma": 127.26},
+            "image": {"file": "133137.jpg", "width": 2304, "height": 1296},
+        }))
+
+        photo = [p for p in photos.find_photos(photo_root=self.root)
+                 if p.relative_path.endswith("133137.jpg")][0]
+        self.assertEqual(photo.largest_area, 4912)
+        self.assertEqual(photo.mean_luma, 127.26)
+        self.assertEqual(photo.camera_decision, "biggest blob")
+        self.assertEqual(photo.metrics["blob_threshold"], 301)
+        self.assertEqual(photo.metrics["boot"], "91b8124e")
+        self.assertEqual(photo.metrics["uptime_s"], 47.5)
+
 
 class TwoKindsOfFrame(ManifestBase):
     """Training frames and photographs share a table and never mix."""
