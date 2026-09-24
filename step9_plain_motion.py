@@ -161,23 +161,40 @@ MAX_PIXEL_THRESHOLD = 75      # never go above this
 # changes size.
 #
 # For scale, measured against real animals the laptop found in this
-# archive:
+# archive, all on a 640x480 motion frame:
 #
-#     smallest animal ever detected     338 px
-#     a squirrel on the ground        ~1,120 px
-#     a crow close to the lens        ~7,900 px
+#     a crow ten metres away, on the patio      49 to 91 px  (26 August;
+#                                               the camera called it quiet)
+#     a squirrel beside the shed, wildlifecam13  1,491 px and up
+#     a squirrel on the ground, close            ~1,120 px
+#     a crow close to the lens                   ~7,900 px
 #
-# It started at step 8's 0.00098, about 301 px, and the first real run
-# said that was too low: wildlifecam14 kept 4,463 photographs in five
-# hours, and the ones between 301 and 600 px were tree shadow crawling
-# across a white wall, not animals.  0.00195 is about 600 px, which
-# halves the take and still sits well under a squirrel.
+# And from the geometry in ai/evaluation-design.md, a deer at thirty
+# metres is about 28x18 = 504 px, and a squirrel at ten metres 14x8 =
+# 112 px.
 #
-# It is deliberately NOT tuned any harder than that.  A back garden with
-# a big sunlit wall is not a park, and a threshold fitted to this one
-# wall would be deaf somewhere with no wall in it.  Run --record at a
-# new site for an hour and read the CSV before changing it again.
-MIN_BLOB_FRACTION = 0.00195
+# The history of this number, because it has moved twice:
+#
+#   301 px   step 8's floor, the first real run.  wildlifecam14 kept
+#            4,463 photographs in five hours and the ones between 301
+#            and 600 px were tree shadow crawling across a white wall.
+#   599 px   set from that, for one afternoon, and never deployed.  Then
+#            checked against a detector (ai/results/2026-09-24-...): it
+#            would have cost no animal in that data, but that data held
+#            one squirrel two metres from the lens.  The "338 px animal"
+#            it was set to stay under turned out to be lens flare.  And
+#            599 sits above a deer at thirty metres.
+#   250 px   now.  The wall's shadows are a space problem and the rate
+#            limits above are the tool for space; the floor's only job
+#            is to ignore noise, and 250 is still five times the crow
+#            that walked past at ten metres.
+#
+# It is deliberately NOT tuned harder than that.  A back garden with a
+# big sunlit wall is not a park, and a floor fitted to one wall would be
+# deaf somewhere with no wall in it.  We would rather fill a card than
+# miss the deer.  Run --record at a new site for an hour and read the
+# CSV before changing it again.
+MIN_BLOB_FRACTION = 0.000814          # 250 px of 307,200
 BIGGEST_BLOB_TO_SAVE = int(MIN_BLOB_FRACTION * MOTION_PIXELS)
 
 
