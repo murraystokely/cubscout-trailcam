@@ -193,33 +193,77 @@ running.
 None of that teaches anything about finding animals in pictures, which is
 exactly why it lives in its own file. **This is the one that gets deployed.**
 
-### Final --- Motion-triggered wildlife camera
+### Step 9 --- The same lesson, without the AI Camera
+
+[`step9_plain_motion.py`](step9_plain_motion.py)
+
+Steps 6, 7 and 8 were written for the AI Camera, and because of that the
+cameras with an ordinary Camera Module never got them. They stayed on step 5:
+save a photograph whenever enough pixels changed *anywhere*.
+
+Step 7 had already explained why that fails --- "ten thousand pixels of
+shivering leaves count exactly the same as ten thousand pixels of deer" ---
+but only the AI cameras got the fix. It is worth knowing how badly that went.
+wildlifecam14 watched a fence line for twenty-one hours and kept **1,109
+photographs, not one of which had an animal in it.** Every one was wind in an
+oleander. A squirrel on that fence covers about 1,100 pixels of the small
+frame, and step 5 was waiting for 20,000.
+
+Step 9 takes step 7's two ideas and leaves the neural network behind:
+
+-   The biggest **joined-up patch** of change, instead of the total number of
+    changed pixels anywhere. Wind scatters thousands of tiny specks across the
+    frame; a squirrel is one solid lump. They look identical if you only
+    count, and nothing alike if you ask which pixels are touching.
+-   A **memory** of what the scene usually looks like, instead of the frame
+    before it --- so an animal that stops moving does not vanish, and an
+    animal holding still is exactly the photograph worth having.
+
+And one change that is not an idea at all, just a number: it looks four times
+a *second* instead of four times a *minute*. A squirrel crosses this fence in
+about a second, so step 5 could miss one entirely in the gap between two
+looks.
+
+It also writes a measurements CSV with one row per look --- kept or not ---
+which is how you choose the blob threshold for a new camera position instead
+of guessing it. Sidecars only exist for photographs that *were* kept, so on
+their own they can never tell you what the camera walked past:
+
+``` bash
+python3 step9_plain_motion.py --record
+```
+
+That step 8 is 1,645 lines and only 16 of them touch the AI camera is the
+whole point of this step: the neural network was never the part doing the
+work.
+
+### Final --- Choosing which step to run
 
 [`final_motion_capture.py`](final_motion_capture.py)
 
-The final program combines the lessons from the previous programs into
-the deployable wildlife camera.
+This is what systemd starts at boot, and it contains no motion detection at
+all. It looks at which camera is plugged in and hands over to the newest step
+written for that camera:
 
-It runs the camera with two streams, like step8 does: a small 640x480
-one that the motion detection watches, and a big 2304x1296 one that gets
-saved when something moves. For a month it asked for no size at all, and
-Picamera2's default is a 640x480 preview --- fine for spotting movement,
-useless for a photograph of a squirrel. Nobody noticed until the pictures
-were put beside the AI Camera's, where the same squirrel was 300 pixels
-long instead of 40.
+| camera | program |
+| --- | --- |
+| Raspberry Pi AI Camera (IMX500) | [`step8_reject_shadows.py`](step8_reject_shadows.py) |
+| an ordinary Camera Module | [`step9_plain_motion.py`](step9_plain_motion.py) |
 
-It:
+Upgrade the hardware, reboot, and the right program runs by itself --- there
+is no service file to edit on eleven Raspberry Pis.
 
--   Starts the camera.
--   Continuously checks for changes between images.
--   Saves a photograph when enough pixels have changed.
--   Uses timestamps for filenames.
--   Organizes photographs into a separate directory for each day.
--   Writes photographs into the directory served by nginx.
--   Checks disk utilization so the camera does not completely fill the
-    Raspberry Pi filesystem.
+It used to be lopsided. The AI Camera was handed to a numbered step, while the
+ordinary Camera Module ran a copy of step 5's rule buried at the bottom of
+*this* file, where no Scout reads it and nobody thought to improve it. That is
+how the plain cameras spent a month on a rule that could not see a squirrel.
+Both paths now point at a numbered step, so the next time one track learns
+something, the other one is a file you can find.
 
-A typical photo layout is:
+Both programs run the camera with two streams: a small 640x480 one the motion
+detection watches, and a big 2304x1296 one saved when something moves. Both
+write into the same layout, so nginx and `sync_cameras.py` cannot tell them
+apart. A typical photo layout is:
 
 ``` text
 /var/www/html/photos/
@@ -277,13 +321,19 @@ sudo systemctl start wildlife-camera
 
 ### Cameras that have been upgraded to the AI Camera
 
-The service always starts `final_motion_capture.py`, but that program now
-checks what camera is actually plugged in before it does anything else.
-If it finds a Raspberry Pi AI Camera it hands straight over to
-[`step8_reject_shadows.py`](step8_reject_shadows.py), which uses the AI
-built into the sensor to make a much better decision about what is worth
-photographing. If only [`step7_ai_motion_detection.py`](step7_ai_motion_detection.py)
-is present it uses that instead.
+The service always starts `final_motion_capture.py`, but that program does no
+motion detection itself. It checks what camera is actually plugged in and
+hands straight over: a Raspberry Pi AI Camera goes to
+[`step8_reject_shadows.py`](step8_reject_shadows.py), which uses the AI built
+into the sensor, and an ordinary Camera Module goes to
+[`step9_plain_motion.py`](step9_plain_motion.py), which reaches nearly the
+same decision without one.
+
+There is deliberately no fallback to an older step. A camera quietly running
+last week's rules is worse than one that does not start, because the first
+kind is discovered weeks later on a card full of leaves. If the step it wants
+is missing the service exits and says so in the journal, so **copy both step
+files to a card, not just the launcher.**
 
 So upgrading a camera is: swap the hardware, reboot, done. There is no
 service file to edit, and a Pi still on the older camera module carries
@@ -583,7 +633,7 @@ The standard **Raspberry Pi Camera Module 3** is the recommended camera.
 
 It provides a good-quality camera, autofocus, and direct support through
 Raspberry Pi's camera software and Picamera2. Its sensor is 4608x2592;
-`final_motion_capture.py` saves photographs at 2304x1296, the size the
+`step9_plain_motion.py` saves photographs at 2304x1296, the size the
 sensor produces natively at half resolution, which a Pi Zero 2 W can
 hold in memory.
 
