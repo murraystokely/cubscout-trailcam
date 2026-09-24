@@ -415,8 +415,17 @@ SETTLE_CHECKS = 8
 LOOP_DELAY = 0.25                 # check four times a second
 WARMUP_SECONDS = 5.0              # let exposure and white balance settle
 
-SAVE_COOLDOWN = 2.0
-MAX_SAVES_PER_HOUR = 240          # a stuck camera cannot fill the card
+# A stuck camera cannot fill the card.  These two were 2 seconds and 240
+# an hour for the first month, set for cards left out for weeks; over
+# that month the cooldown alone held back 13 frames of a crow the rules
+# wanted, and nothing else the limits stopped was worth having.  For a
+# campout of a few days we would rather have the frames: a 32 GB card
+# has about 20 GB free, a photograph is under a megabyte, and with the
+# darkness gate the night is free, so 720 an hour is about 6.5 GB a day
+# from a camera that never stops -- three days with room to spare, and
+# the disk guard for anything longer.  Step 9 uses the same two numbers.
+SAVE_COOLDOWN = 1.0
+MAX_SAVES_PER_HOUR = 720
 
 DISK_FULL_PERCENT = 95.0
 DISK_CHECK_INTERVAL = 10.0

@@ -88,6 +88,41 @@ LOOP_DELAY = 0.25
 
 
 # ------------------------------------------------------------
+# Rate limits, so a windy day cannot fill the card
+# ------------------------------------------------------------
+#
+# The first real run had neither of these.  wildlifecam13, pointed at
+# oleander in wind, kept 1,814 photographs in one hour -- about 1.5 GB --
+# and would have filled its card in a day and a half with nothing on it.
+# The blob floor is the wrong tool for that: raising it to 599 px only
+# took that camera down to 1,350 an hour, and it costs distant animals on
+# every other camera.  A ceiling on saves costs nothing an animal needs.
+#
+# Two limits, the same two step 8 has had since it was written:
+#
+#   SAVE_COOLDOWN       the least time between two photographs.  An
+#                       animal that stays is photographed once a second,
+#                       which is plenty; wind that trips the camera three
+#                       times a second is not photographed three times.
+#   MAX_SAVES_PER_HOUR  the ceiling.  When it is reached the camera keeps
+#                       looking and keeps writing the CSV -- so nothing
+#                       is hidden from the evaluation -- and simply stops
+#                       saving until the hour has moved on.
+#
+# The numbers.  A 32 GB card has about 20 GB free and a photograph here
+# is 0.5 to 0.9 MB; the darkness gate makes the night free, so a day
+# costs about MAX_SAVES_PER_HOUR x 13 hours x 0.7 MB.  At 720 an hour
+# that is 6.5 GB a day from a camera that never stops triggering: a
+# three-day campout fits with room to spare, a windy week does not, and
+# the 95% disk guard below is what stops it then.  Step 8 used 240 and 2
+# seconds for a month; that was set for cards left out for weeks, and it
+# threw away 13 frames of a crow that were wanted.  We would rather have
+# the frames.
+SAVE_COOLDOWN = 1.0
+MAX_SAVES_PER_HOUR = 720
+
+
+# ------------------------------------------------------------
 # Cleaning up the picture before comparing it
 # ------------------------------------------------------------
 
@@ -126,23 +161,40 @@ MAX_PIXEL_THRESHOLD = 75      # never go above this
 # changes size.
 #
 # For scale, measured against real animals the laptop found in this
-# archive:
+# archive, all on a 640x480 motion frame:
 #
-#     smallest animal ever detected     338 px
-#     a squirrel on the ground        ~1,120 px
-#     a crow close to the lens        ~7,900 px
+#     a crow ten metres away, on the patio      49 to 91 px  (26 August;
+#                                               the camera called it quiet)
+#     a squirrel beside the shed, wildlifecam13  1,491 px and up
+#     a squirrel on the ground, close            ~1,120 px
+#     a crow close to the lens                   ~7,900 px
 #
-# It started at step 8's 0.00098, about 301 px, and the first real run
-# said that was too low: wildlifecam14 kept 4,463 photographs in five
-# hours, and the ones between 301 and 600 px were tree shadow crawling
-# across a white wall, not animals.  0.00195 is about 600 px, which
-# halves the take and still sits well under a squirrel.
+# And from the geometry in ai/evaluation-design.md, a deer at thirty
+# metres is about 28x18 = 504 px, and a squirrel at ten metres 14x8 =
+# 112 px.
 #
-# It is deliberately NOT tuned any harder than that.  A back garden with
-# a big sunlit wall is not a park, and a threshold fitted to this one
-# wall would be deaf somewhere with no wall in it.  Run --record at a
-# new site for an hour and read the CSV before changing it again.
-MIN_BLOB_FRACTION = 0.00195
+# The history of this number, because it has moved twice:
+#
+#   301 px   step 8's floor, the first real run.  wildlifecam14 kept
+#            4,463 photographs in five hours and the ones between 301
+#            and 600 px were tree shadow crawling across a white wall.
+#   599 px   set from that, for one afternoon, and never deployed.  Then
+#            checked against a detector (ai/results/2026-09-24-...): it
+#            would have cost no animal in that data, but that data held
+#            one squirrel two metres from the lens.  The "338 px animal"
+#            it was set to stay under turned out to be lens flare.  And
+#            599 sits above a deer at thirty metres.
+#   250 px   now.  The wall's shadows are a space problem and the rate
+#            limits above are the tool for space; the floor's only job
+#            is to ignore noise, and 250 is still five times the crow
+#            that walked past at ten metres.
+#
+# It is deliberately NOT tuned harder than that.  A back garden with a
+# big sunlit wall is not a park, and a floor fitted to one wall would be
+# deaf somewhere with no wall in it.  We would rather fill a card than
+# miss the deer.  Run --record at a new site for an hour and read the
+# CSV before changing it again.
+MIN_BLOB_FRACTION = 0.000814          # 250 px of 307,200
 BIGGEST_BLOB_TO_SAVE = int(MIN_BLOB_FRACTION * MOTION_PIXELS)
 
 
@@ -282,6 +334,11 @@ MEASUREMENT_FIELDS = [
     "time", "uptime_s", "boot", "mean_luma", "noise", "pixel_threshold",
     "changed_pixels", "biggest_blob", "blob_x", "blob_y", "blob_w", "blob_h",
     "saved",
+    # Why a frame the rules wanted was not saved: "cooldown", "hourly
+    # limit", or empty.  Without this a rate limit would look, in the
+    # CSV, exactly like the rules deciding there was nothing there --
+    # and somebody would spend a weekend tuning the wrong number.
+    "held",
 ]
 
 
@@ -293,7 +350,7 @@ class Measurements:
         self.handle = None
         self.writer = None
 
-    def record(self, now, measurement, saved):
+    def record(self, now, measurement, saved, held=""):
         day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
         if self.day != day_directory:
             self.close()
@@ -320,6 +377,7 @@ class Measurements:
             "blob_x": box[0], "blob_y": box[1],
             "blob_w": box[2], "blob_h": box[3],
             "saved": int(bool(saved)),
+            "held": held,
         })
         # Flush every row.  A trail camera is switched off by having its
         # battery pulled, so anything still sitting in a buffer is lost.
@@ -429,6 +487,12 @@ def main():
     measurements = Measurements()
     background = None
 
+    # For the rate limits: when we last saved, and every save in the
+    # last hour.  Wall-clock seconds, from time.monotonic(), so a clock
+    # that jumps when the network is found cannot open or close the gate.
+    last_save_time = -1e9
+    save_times = []
+
     try:
         while True:
             disk = shutil.disk_usage("/")
@@ -461,7 +525,18 @@ def main():
                              and measurement["biggest_blob"]
                              >= BIGGEST_BLOB_TO_SAVE)
 
-            if worth_keeping and not options.record:
+            # The rules wanted it.  Now the rate limits get a say, and
+            # the CSV records their answer separately from the rules'.
+            held = ""
+            if worth_keeping:
+                moment = time.monotonic()
+                save_times = [t for t in save_times if moment - t < 3600.0]
+                if moment - last_save_time < SAVE_COOLDOWN:
+                    held = "cooldown"
+                elif len(save_times) >= MAX_SAVES_PER_HOUR:
+                    held = "hourly limit"
+
+            if worth_keeping and not held and not options.record:
                 day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
                 os.makedirs(day_directory, exist_ok=True)
                 # Milliseconds in the name, like step 8's training
@@ -475,9 +550,15 @@ def main():
                 filename = f"{day_directory}/{stamp}.jpg"
                 picam2.capture_file(filename)      # from "main": the big one
                 write_sidecar(filename, now, measurement)
+                last_save_time = moment
+                save_times.append(moment)
                 print(f"kept {os.path.basename(filename)} -- "
                       f"biggest patch {measurement['biggest_blob']} px "
                       f"at {measurement['blob_box']}")
+            elif held and not options.quiet:
+                print(f"wanted it ({measurement['biggest_blob']} px) but "
+                      f"held: {held}  "
+                      f"[{len(save_times)} saves this hour]")
             elif not options.quiet:
                 if too_dark:
                     print(f"too dark to see anything "
@@ -490,7 +571,10 @@ def main():
                           f"noise {measurement['noise']:5.1f}  "
                           f"bar {measurement['pixel_threshold']:3d}")
 
-            measurements.record(now, measurement, worth_keeping)
+            measurements.record(now, measurement,
+                                saved=worth_keeping and not held
+                                and not options.record,
+                                held=held)
 
             # Update the memory: slowly everywhere, faster where nothing
             # moved.  cv2 wants the mask the other way round -- it
