@@ -228,7 +228,7 @@ def command_shortlist(options):
     """The best animal pictures, one per visit, as a table and a gallery."""
     database = manifest_module.open_manifest()
     shortlist_module.build(
-        database, run_id=options.run,
+        database, run_ids=options.run,
         kind=None if options.kind == "all" else options.kind,
         top=options.top, destination=options.out)
     database.close()
@@ -360,8 +360,11 @@ def build_parser():
 
     shortlist = subcommands.add_parser(
         "shortlist", help="the best animal pictures, ranked, one per visit")
-    shortlist.add_argument("--run", type=int, default=None,
-                           help="which run's boxes (default: the reference)")
+    shortlist.add_argument("--run", type=int, action="append", default=None,
+                           help="which run's boxes (default: the reference). "
+                                "Repeat it to take the union of several "
+                                "runs: a frame is in if any of them is "
+                                "sure, out if any of them saw a person")
     shortlist.add_argument("--kind", choices=("training", "photo", "all"),
                            default="all",
                            help="rank the camera's photographs, the "

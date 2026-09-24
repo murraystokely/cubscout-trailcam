@@ -35,17 +35,33 @@ from . import config
 from . import manifest as manifest_module
 
 
-def candidates(database, run_id, kind=None):
-    """Every animal box at or above ANIMAL_TRUTH in one run, best per frame."""
-    where = "r.run_id = ? AND d.category = 'animal' AND d.confidence >= ?"
-    arguments = [run_id, config.ANIMAL_TRUTH]
+def _placeholders(run_ids):
+    return ", ".join("?" for _ in run_ids)
+
+
+def candidates(database, run_ids, kind=None):
+    """Every animal box at or above ANIMAL_TRUTH in any of the runs, best
+    per frame.
+
+    More than one run on purpose.  v5a and redwood were each run over the
+    whole archive (results/2026-09-19-v5a-against-redwood-over-everything.md)
+    and at the 0.8 line each finds real animals the other leaves just
+    under it -- redwood about a hundred frames of squirrels in leaf
+    litter, v5a a hundred of crows under the table -- while neither puts
+    an empty frame over the line.  So for the gallery the honest input is
+    the union: a frame is a candidate if either model is sure, and its box
+    is whichever model was surer.
+    """
+    where = (f"r.run_id IN ({_placeholders(run_ids)}) "
+             f"AND d.category = 'animal' AND d.confidence >= ?")
+    arguments = [*run_ids, config.ANIMAL_TRUTH]
     if kind:
         where += " AND f.kind = ?"
         arguments.append(kind)
 
     rows = database.execute(
         f"""SELECT f.id AS frame_id, f.path, f.camera, f.day, f.captured_at,
-                   f.kind, f.mean_luma,
+                   f.kind, f.mean_luma, r.run_id,
                    d.confidence, d.x, d.y, d.w, d.h, d.crop_path
               FROM detections d
               JOIN frame_results r ON r.id = d.frame_result_id
@@ -55,7 +71,8 @@ def candidates(database, run_id, kind=None):
         arguments).fetchall()
 
     # One box per frame: the first, which the ORDER BY makes the most
-    # confident.  Two animals in one frame is a nicer problem than we have.
+    # confident across every run.  Two animals in one frame is a nicer
+    # problem than we have.
     best = {}
     for row in rows:
         best.setdefault(row["frame_id"], dict(row))
@@ -68,13 +85,24 @@ def size_term(box):
     return min(1.0, area / config.SUBJECT_FULL_AREA) ** config.SIZE_EXPONENT
 
 
-def events_with_people(database, run_id):
+def events_with_people(database, run_ids):
     """The stretches of each camera's day that had a person in them.
 
-    Every frame the run saw -- not just the animal ones -- is grouped into
-    events: same camera, no gap over EVENT_GAP_SECONDS.  An event is
-    tainted if any frame in it has a person at PERSON_NEARBY or above, and
-    the whole event is returned as a (camera, start, end) span.
+    Every frame any of the runs saw -- not just the animal ones -- is
+    grouped into events: same camera, no gap over EVENT_GAP_SECONDS.  An
+    event is tainted if EVERY run that saw it puts a person somewhere in
+    it at PERSON_NEARBY or above, and the whole event is returned as a
+    (camera, start, end) span.
+
+    Every run, not any run.  The first version took any run's word, on
+    the grounds that redwood finds more people than v5a; it then threw out
+    126 frames of morning crows, because redwood's person boxes in those
+    events were a crow's feet under the bench at 0.54, a Cheerio at the
+    edge of the frame at 0.52, and a crow at 0.86.  The real people --
+    the child of 4 September, the gardener, the evening of the 18th --
+    score over 0.9 with both models.  A person two detectors agree on is
+    a person; a person one detector sees at 0.5 in a frame full of crows
+    is, on this archive, a crow.
 
     Why the whole event and not a minute either side: a gardener on
     wildlifecam10 tripped the camera 240 times in fourteen minutes and
@@ -86,29 +114,32 @@ def events_with_people(database, run_id):
     analysis-2026-09-18-wildlifecam4.md in the private analysis repo.)
     """
     rows = database.execute(
-        """SELECT f.camera, f.captured_at, r.max_person_conf
-             FROM frame_results r JOIN frames f ON f.id = r.frame_id
-            WHERE r.run_id = ? AND r.status = 'ok'
-            ORDER BY f.camera, f.captured_at""", (run_id,)).fetchall()
+        f"""SELECT f.camera, f.captured_at, r.run_id, r.max_person_conf
+              FROM frame_results r JOIN frames f ON f.id = r.frame_id
+             WHERE r.run_id IN ({_placeholders(run_ids)})
+               AND r.status = 'ok'
+             ORDER BY f.camera, f.captured_at""", list(run_ids)).fetchall()
 
     spans = []
-    current = None                      # [camera, start, end, has_person]
+    current = None                  # [camera, start, end, {run: max person}]
 
     def close():
-        if current and current[3]:
+        if current and current[3] and all(
+                best >= config.PERSON_NEARBY for best in current[3].values()):
             spans.append((current[0], current[1], current[2]))
 
     for row in rows:
         when = datetime.fromisoformat(row["captured_at"])
-        person = (row["max_person_conf"] or 0.0) >= config.PERSON_NEARBY
+        person = row["max_person_conf"] or 0.0
         if (current is None or row["camera"] != current[0]
                 or (when - current[2]).total_seconds()
                 > config.EVENT_GAP_SECONDS):
             close()
-            current = [row["camera"], when, when, person]
+            current = [row["camera"], when, when, {row["run_id"]: person}]
         else:
-            current[2] = when
-            current[3] = current[3] or person
+            current[2] = max(current[2], when)
+            seen = current[3]
+            seen[row["run_id"]] = max(seen.get(row["run_id"], 0.0), person)
 
     close()
     return spans
@@ -226,23 +257,49 @@ def best_of_each_visit(entries):
     return sorted(result, key=lambda e: -e["score"])
 
 
-def build(database, run_id=None, kind=None, top=30, destination=None,
+def looked_at(database, run_ids):
+    """How much the runs have seen between them: the number for the top
+    of the page.  Frames, not results, so a frame two models both saw
+    counts once."""
+    row = database.execute(
+        f"""SELECT COUNT(DISTINCT r.frame_id) AS frames,
+                   COUNT(DISTINCT CASE WHEN f.kind = 'photo'
+                                       THEN r.frame_id END) AS photos,
+                   COUNT(DISTINCT f.camera) AS cameras,
+                   MIN(f.day) AS first_day, MAX(f.day) AS last_day
+              FROM frame_results r JOIN frames f ON f.id = r.frame_id
+             WHERE r.run_id IN ({_placeholders(run_ids)})""",
+        list(run_ids)).fetchone()
+    return dict(row)
+
+
+def build(database, run_ids=None, kind=None, top=30, destination=None,
           quiet=False):
     """Rank, dedupe, print, and write the CSV and the gallery."""
-    run = (database.execute("SELECT * FROM runs WHERE id = ?",
-                            (run_id,)).fetchone() if run_id
-           else manifest_module.reference_run(database))
-    if run is None:
-        print("No run to rank: pass --run, or set a reference run.")
-        return []
+    if run_ids:
+        runs = [database.execute("SELECT * FROM runs WHERE id = ?",
+                                 (run_id,)).fetchone() for run_id in run_ids]
+        if any(run is None for run in runs):
+            print(f"No such run in {run_ids}. `trailcam runs` lists them.")
+            return []
+    else:
+        reference = manifest_module.reference_run(database)
+        if reference is None:
+            print("No run to rank: pass --run, or set a reference run.")
+            return []
+        runs = [reference]
 
-    found = candidates(database, run["id"], kind=kind)
+    run_ids = [run["id"] for run in runs]
+    found = candidates(database, run_ids, kind=kind)
     entries = score(without_people(found,
-                                   events_with_people(database, run["id"])))
+                                   events_with_people(database, run_ids)))
     ranked = best_of_each_visit(entries)
+    totals = looked_at(database, run_ids)
 
     if not quiet:
-        print(f"Run {run['id']} ({run['name']}): {len(found)} animal "
+        names = ", ".join(f"{run['id']} ({run['name']})" for run in runs)
+        print(f"Run{'s' if len(runs) > 1 else ''} {names}: "
+              f"{totals['frames']} frames looked at, {len(found)} animal "
               f"frames at >= {config.ANIMAL_TRUTH}, "
               f"{len(found) - len(entries)} left out for being in an event "
               f"with a person in it, {len(ranked)} visits.\n")
@@ -258,7 +315,7 @@ def build(database, run_id=None, kind=None, top=30, destination=None,
 
     destination = Path(destination or config.SHORTLIST_DIR)
     write_csv(ranked, destination / "shortlist.csv")
-    write_gallery(ranked, run, destination, top=top)
+    write_gallery(ranked, runs, destination, top=top, totals=totals)
 
     if not quiet:
         print(f"\nWrote {destination / 'shortlist.csv'} and "
@@ -284,7 +341,7 @@ def write_csv(ranked, path):
                 e["visit_frames"], e["visit_start"], e["visit_end"]])
 
 
-def write_gallery(ranked, run, destination, top=30):
+def write_gallery(ranked, runs, destination, top=30, totals=None):
     """A static page of every visit: the top ones large, the rest as crops.
 
     The top entries get two images each -- the crop, padded generously,
@@ -344,14 +401,27 @@ def write_gallery(ranked, run, destination, top=30):
     # noindex, because this page may end up on a public web server at an
     # address handed out by hand.  Nothing links to it, and this asks the
     # search engines not to either, should somebody share the link.
+    models = " and ".join(html.escape(run["name"]) for run in runs)
+    totals = totals or {}
+    if totals.get("frames"):
+        looked = (f"<p class=\"total\"><b>{totals['frames']:,}</b> images "
+                  f"looked at by MegaDetector "
+                  f"({totals['photos']:,} photographs the cameras chose, "
+                  f"the rest training frames), from "
+                  f"{totals['cameras']} cameras, "
+                  f"{totals['first_day']} to {totals['last_day']}.</p>")
+    else:
+        looked = ""
+
     page = f"""<!doctype html>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
-<title>Best animal pictures -- run {run['id']} ({html.escape(run['name'])})</title>
+<title>Best animal pictures</title>
 <style>
   body {{ font: 14px/1.4 system-ui, sans-serif; margin: 2em; background: #fafafa; }}
   main {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1.5em; }}
   .rest {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6em; }}
+  .total {{ font-size: 18px; }}
   figure {{ margin: 0; background: white; border: 1px solid #ddd; padding: .5em; }}
   figure.small {{ padding: .25em; }}
   figure.small figcaption {{ font-size: 11px; padding-top: .2em; }}
@@ -360,9 +430,13 @@ def write_gallery(ranked, run, destination, top=30):
   code {{ font-size: 12px; color: #666; }}
 </style>
 <h1>Best animal pictures</h1>
-<p>Run {run['id']}, {html.escape(run['name'])}: one frame per visit, ranked by
-confidence &times; size &times; wholeness &times; sharpness. Click a crop for
-the whole photograph. Generated {datetime.now():%Y-%m-%d %H:%M}.</p>
+{looked}
+<p>Detector{'s' if len(runs) > 1 else ''} {models}: a frame is in if any
+of them is sure it holds an animal, and out if they agree a person was
+about.
+One frame per visit, ranked by confidence &times; size &times; wholeness
+&times; sharpness. Click a crop for the whole photograph. Generated
+{datetime.now():%Y-%m-%d %H:%M}.</p>
 <main>{''.join(cards)}
 </main>
 <h2>Every other visit ({len(strip)})</h2>

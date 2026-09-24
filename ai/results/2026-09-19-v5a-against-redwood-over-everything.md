@@ -54,9 +54,14 @@ Redwood is the better person detector, again, and by more this time:
 | redwood | 1,587 |
 | redwood only | 296 |
 
-and it declines the child that v5a called an animal. For the privacy
-filter in front of any gallery, redwood's person scores are the ones to
-trust.
+and it declines the child that v5a called an animal. **But its extra
+people are not all people.** Drawn on the frames, redwood's lone person
+boxes in the morning crow events are a crow's feet under the bench at
+0.54, a Cheerio at the edge of the frame at 0.52 and a crow at 0.86; the
+first union gallery lost 126 frames of crows to them. The real people
+score over 0.9 with both models, so the filter now requires both to
+agree, and the 296 figure should be read as "296 frames redwood *calls*
+a person", an unknown share of which are crows.
 
 ## The uncertain band, which is where the two really differ
 
@@ -94,9 +99,11 @@ patio's paving is still where the evaluation data comes from.
 animals, so the right input to the shortlist is the union of the two
 runs, and the right person filter is redwood's. That is a small change to
 `shortlist` --- take more than one `--run`, keep each frame's best box
-across them, and read person events from all of them --- and it would add
-about thirty visits to the gallery at no cost in false positives. Not
-done yet.
+across them, and read person events from all of them --- and it adds
+visits to the gallery at no cost in false positives. Done the same
+evening: `shortlist --run 9 --run 13` gives 228 visits against 216, and
+the page now says how many images the detectors have looked at between
+them, which is 58,099.
 
 **The 0.5 to 0.8 band on both models holds more real animals** than the
 ranking currently shows, especially squirrels on the leaf-litter cameras.
