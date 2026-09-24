@@ -88,6 +88,41 @@ LOOP_DELAY = 0.25
 
 
 # ------------------------------------------------------------
+# Rate limits, so a windy day cannot fill the card
+# ------------------------------------------------------------
+#
+# The first real run had neither of these.  wildlifecam13, pointed at
+# oleander in wind, kept 1,814 photographs in one hour -- about 1.5 GB --
+# and would have filled its card in a day and a half with nothing on it.
+# The blob floor is the wrong tool for that: raising it to 599 px only
+# took that camera down to 1,350 an hour, and it costs distant animals on
+# every other camera.  A ceiling on saves costs nothing an animal needs.
+#
+# Two limits, the same two step 8 has had since it was written:
+#
+#   SAVE_COOLDOWN       the least time between two photographs.  An
+#                       animal that stays is photographed once a second,
+#                       which is plenty; wind that trips the camera three
+#                       times a second is not photographed three times.
+#   MAX_SAVES_PER_HOUR  the ceiling.  When it is reached the camera keeps
+#                       looking and keeps writing the CSV -- so nothing
+#                       is hidden from the evaluation -- and simply stops
+#                       saving until the hour has moved on.
+#
+# The numbers.  A 32 GB card has about 20 GB free and a photograph here
+# is 0.5 to 0.9 MB; the darkness gate makes the night free, so a day
+# costs about MAX_SAVES_PER_HOUR x 13 hours x 0.7 MB.  At 720 an hour
+# that is 6.5 GB a day from a camera that never stops triggering: a
+# three-day campout fits with room to spare, a windy week does not, and
+# the 95% disk guard below is what stops it then.  Step 8 used 240 and 2
+# seconds for a month; that was set for cards left out for weeks, and it
+# threw away 13 frames of a crow that were wanted.  We would rather have
+# the frames.
+SAVE_COOLDOWN = 1.0
+MAX_SAVES_PER_HOUR = 720
+
+
+# ------------------------------------------------------------
 # Cleaning up the picture before comparing it
 # ------------------------------------------------------------
 
@@ -282,6 +317,11 @@ MEASUREMENT_FIELDS = [
     "time", "uptime_s", "boot", "mean_luma", "noise", "pixel_threshold",
     "changed_pixels", "biggest_blob", "blob_x", "blob_y", "blob_w", "blob_h",
     "saved",
+    # Why a frame the rules wanted was not saved: "cooldown", "hourly
+    # limit", or empty.  Without this a rate limit would look, in the
+    # CSV, exactly like the rules deciding there was nothing there --
+    # and somebody would spend a weekend tuning the wrong number.
+    "held",
 ]
 
 
@@ -293,7 +333,7 @@ class Measurements:
         self.handle = None
         self.writer = None
 
-    def record(self, now, measurement, saved):
+    def record(self, now, measurement, saved, held=""):
         day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
         if self.day != day_directory:
             self.close()
@@ -320,6 +360,7 @@ class Measurements:
             "blob_x": box[0], "blob_y": box[1],
             "blob_w": box[2], "blob_h": box[3],
             "saved": int(bool(saved)),
+            "held": held,
         })
         # Flush every row.  A trail camera is switched off by having its
         # battery pulled, so anything still sitting in a buffer is lost.
@@ -429,6 +470,12 @@ def main():
     measurements = Measurements()
     background = None
 
+    # For the rate limits: when we last saved, and every save in the
+    # last hour.  Wall-clock seconds, from time.monotonic(), so a clock
+    # that jumps when the network is found cannot open or close the gate.
+    last_save_time = -1e9
+    save_times = []
+
     try:
         while True:
             disk = shutil.disk_usage("/")
@@ -461,7 +508,18 @@ def main():
                              and measurement["biggest_blob"]
                              >= BIGGEST_BLOB_TO_SAVE)
 
-            if worth_keeping and not options.record:
+            # The rules wanted it.  Now the rate limits get a say, and
+            # the CSV records their answer separately from the rules'.
+            held = ""
+            if worth_keeping:
+                moment = time.monotonic()
+                save_times = [t for t in save_times if moment - t < 3600.0]
+                if moment - last_save_time < SAVE_COOLDOWN:
+                    held = "cooldown"
+                elif len(save_times) >= MAX_SAVES_PER_HOUR:
+                    held = "hourly limit"
+
+            if worth_keeping and not held and not options.record:
                 day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
                 os.makedirs(day_directory, exist_ok=True)
                 # Milliseconds in the name, like step 8's training
@@ -475,9 +533,15 @@ def main():
                 filename = f"{day_directory}/{stamp}.jpg"
                 picam2.capture_file(filename)      # from "main": the big one
                 write_sidecar(filename, now, measurement)
+                last_save_time = moment
+                save_times.append(moment)
                 print(f"kept {os.path.basename(filename)} -- "
                       f"biggest patch {measurement['biggest_blob']} px "
                       f"at {measurement['blob_box']}")
+            elif held and not options.quiet:
+                print(f"wanted it ({measurement['biggest_blob']} px) but "
+                      f"held: {held}  "
+                      f"[{len(save_times)} saves this hour]")
             elif not options.quiet:
                 if too_dark:
                     print(f"too dark to see anything "
@@ -490,7 +554,10 @@ def main():
                           f"noise {measurement['noise']:5.1f}  "
                           f"bar {measurement['pixel_threshold']:3d}")
 
-            measurements.record(now, measurement, worth_keeping)
+            measurements.record(now, measurement,
+                                saved=worth_keeping and not held
+                                and not options.record,
+                                held=held)
 
             # Update the memory: slowly everywhere, faster where nothing
             # moved.  cv2 wants the mask the other way round -- it
