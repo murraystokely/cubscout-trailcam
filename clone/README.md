@@ -172,12 +172,28 @@ sudo ./shrink_image.sh --minimal ~/webelos-wildlifecam.img
 
 A camera master is mostly empty --- typically under 10 GB of a 32 GB card ---
 so this can cut the image by two thirds. Smaller images clone faster, burn
-faster and compress better, and cost nothing at the far end, because the Pi
-grows the filesystem back on first boot:
+faster and compress better.
+
+They do **not** grow back by themselves, though, and it is easy to assume they
+will. Raspberry Pi OS auto-expands only on the first boot of a freshly written
+official image --- the only kind still carrying `init_resize` in its
+`cmdline.txt` --- and a clone lost that hook the first time the master was
+booted. You can check any card:
 
 ```bash
-sudo raspi-config --expand-rootfs
+grep -c init_resize /boot/firmware/cmdline.txt    # 0 means it will not expand
 ```
+
+So after `--minimal`, take the rest of the card once, on the Pi:
+
+```bash
+sudo raspi-config --expand-rootfs && sudo reboot
+```
+
+After `--fit` there is nothing worth reclaiming: the filesystem already fills
+the card it was fitted to. The difference matters --- `--minimal` on a master
+with 8 GB in use leaves a filesystem with about a gigabyte free, which is not
+enough to run a desktop session on, and nothing will widen it for you.
 
 ### Options
 

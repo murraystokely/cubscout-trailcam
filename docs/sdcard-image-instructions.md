@@ -620,8 +620,19 @@ burned to a 64 GB card leaves half the card unused. Raspberry Pi OS only
 auto-expands on the first boot of a freshly flashed official image, not on
 a clone.
 
-If the destination card is bigger, expand it once on the Pi after first
-boot:
+The mechanism is `init_resize` in `cmdline.txt`, which removes itself after
+the boot it runs on, so any card you can check has already used it up:
+
+```bash
+grep -c init_resize /boot/firmware/cmdline.txt    # 0 means it will not expand
+```
+
+This catches people twice: once on a bigger card, as above, and again after
+[`shrink_image.sh --minimal`](../clone/README.md#shrinking-an-image-to-fit-a-smaller-card), which
+cuts the filesystem down to just past the data. Neither grows back on its own.
+
+If the destination card is bigger, or the image was shrunk, expand it once on
+the Pi after first boot:
 
 ```bash
 sudo raspi-config --expand-rootfs

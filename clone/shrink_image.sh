@@ -76,8 +76,18 @@ Options:
   -y, --yes       skip the typed confirmation
   -h, --help      show this help
 
-The Pi grows the filesystem back on first boot, so a shrunken image is not
-a smaller camera:  sudo raspi-config --expand-rootfs
+A shrunken image does NOT grow back by itself. Raspberry Pi OS auto-expands
+only on the first boot of a freshly written official image -- the only kind
+still carrying init_resize in its cmdline.txt -- and a clone lost that hook
+the first time the master was booted. Check any card with:
+
+    grep -c init_resize /boot/firmware/cmdline.txt
+
+After --fit there is nothing worth reclaiming: the filesystem already fills
+the card it was fitted to. After --minimal there is, so take the rest of the
+card once, on the Pi:
+
+    sudo raspi-config --expand-rootfs && sudo reboot
 EOF
 }
 
@@ -415,4 +425,16 @@ fi
 echo
 echo "Next:"
 echo "  sudo ./burn_image.sh --verify $WORK ${DEVICE:-/dev/sdX}"
-echo "  then on the Pi's first boot:  sudo raspi-config --expand-rootfs"
+echo
+# A clone does not auto-expand: init_resize removed itself from cmdline.txt
+# the first time the master was booted.  So say plainly whether there is
+# anything left to reclaim, rather than sending everyone to raspi-config.
+if [ "$MINIMAL" -eq 1 ]; then
+    echo "This image was cut down to the data, and a clone does NOT expand"
+    echo "itself on first boot.  To take the rest of the card, once on the Pi:"
+    echo "  sudo raspi-config --expand-rootfs && sudo reboot"
+else
+    echo "Nothing to expand afterwards: the filesystem already fills the card"
+    echo "this was fitted to.  (A clone does not auto-expand on first boot,"
+    echo "so on a LARGER card than this you would have to do it by hand.)"
+fi
