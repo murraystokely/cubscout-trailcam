@@ -125,19 +125,43 @@ MAX_PIXEL_THRESHOLD = 75      # never go above this
 # pixel count, so it means the same thing if the small frame ever
 # changes size.
 #
-# 0.00098 is step 8's figure, about 301 pixels at 640x480.  For scale,
-# measured against real animals the laptop found in this archive:
+# For scale, measured against real animals the laptop found in this
+# archive:
 #
 #     smallest animal ever detected     338 px
 #     a squirrel on the ground        ~1,120 px
 #     a crow close to the lens        ~7,900 px
 #
-# So 301 leaves room for something smaller than anything we have yet
-# photographed, and still refuses the scattered leaf-flicker that fooled
-# step 5.  Run --record at a new site for a few hours and look at the
-# CSV before changing it.
-MIN_BLOB_FRACTION = 0.00098
+# It started at step 8's 0.00098, about 301 px, and the first real run
+# said that was too low: wildlifecam14 kept 4,463 photographs in five
+# hours, and the ones between 301 and 600 px were tree shadow crawling
+# across a white wall, not animals.  0.00195 is about 600 px, which
+# halves the take and still sits well under a squirrel.
+#
+# It is deliberately NOT tuned any harder than that.  A back garden with
+# a big sunlit wall is not a park, and a threshold fitted to this one
+# wall would be deaf somewhere with no wall in it.  Run --record at a
+# new site for an hour and read the CSV before changing it again.
+MIN_BLOB_FRACTION = 0.00195
 BIGGEST_BLOB_TO_SAVE = int(MIN_BLOB_FRACTION * MOTION_PIXELS)
+
+
+# ------------------------------------------------------------
+# Too dark to see anything
+# ------------------------------------------------------------
+
+# In the dark a Camera Module sees almost nothing but sensor noise, and
+# that noise is not evenly scattered -- it clumps, so the "biggest
+# joined-up patch" test finds patches in it.  On the night of
+# 23 September this camera kept 359 photographs of a black frame, median
+# blob 6,437 px, twenty times the daylight median.  There is nothing in
+# any of them.
+#
+# So the first question is the one step 8 has always asked first: is
+# there enough light to see anything at all?  Below this the camera
+# keeps looking and keeps measuring -- the CSV still gets its row -- it
+# just refuses to spend a photograph.
+TOO_DARK_TO_SEE = 25          # mean brightness, 0-255
 
 
 # ------------------------------------------------------------
@@ -397,7 +421,8 @@ def main():
           f"watching at {MOTION_WIDTH}x{MOTION_HEIGHT}, "
           f"{1 / LOOP_DELAY:.0f} times a second.")
     print(f"Keeping a photograph when the biggest joined-up patch of "
-          f"change reaches {BIGGEST_BLOB_TO_SAVE} pixels.")
+          f"change reaches {BIGGEST_BLOB_TO_SAVE} pixels, and only while "
+          f"there is enough light to see (brightness {TOO_DARK_TO_SEE}+).")
     if options.record:
         print("--record: measuring only, no photographs will be saved.")
 
@@ -428,23 +453,42 @@ def main():
 
             mask, measurement = look(blurred, background)
             now = datetime.now()
-            worth_keeping = measurement["biggest_blob"] >= BIGGEST_BLOB_TO_SAVE
+            # Light first, then size -- the same order step 8 asks them
+            # in, and for the same reason: in the dark the size question
+            # has no meaningful answer.
+            too_dark = measurement["mean_luma"] < TOO_DARK_TO_SEE
+            worth_keeping = (not too_dark
+                             and measurement["biggest_blob"]
+                             >= BIGGEST_BLOB_TO_SAVE)
 
             if worth_keeping and not options.record:
                 day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
                 os.makedirs(day_directory, exist_ok=True)
-                filename = f"{day_directory}/{now.strftime('%H%M%S')}.jpg"
+                # Milliseconds in the name, like step 8's training
+                # bursts.  This program looks four times a SECOND, so a
+                # name good only to the second quietly overwrites its
+                # own work: the first run kept 4,463 photographs and left
+                # 2,225 files, losing every frame of a burst but the
+                # last -- which are the ones where something is moving
+                # fastest.
+                stamp = f"{now.strftime('%H%M%S')}_{now.microsecond // 1000:03d}"
+                filename = f"{day_directory}/{stamp}.jpg"
                 picam2.capture_file(filename)      # from "main": the big one
                 write_sidecar(filename, now, measurement)
                 print(f"kept {os.path.basename(filename)} -- "
                       f"biggest patch {measurement['biggest_blob']} px "
                       f"at {measurement['blob_box']}")
             elif not options.quiet:
-                print(f"biggest patch {measurement['biggest_blob']:6d} px "
-                      f"(need {BIGGEST_BLOB_TO_SAVE})  "
-                      f"changed {measurement['changed_pixels']:6d}  "
-                      f"noise {measurement['noise']:5.1f}  "
-                      f"bar {measurement['pixel_threshold']:3d}")
+                if too_dark:
+                    print(f"too dark to see anything "
+                          f"(brightness {measurement['mean_luma']:.1f}, "
+                          f"need {TOO_DARK_TO_SEE})")
+                else:
+                    print(f"biggest patch {measurement['biggest_blob']:6d} px "
+                          f"(need {BIGGEST_BLOB_TO_SAVE})  "
+                          f"changed {measurement['changed_pixels']:6d}  "
+                          f"noise {measurement['noise']:5.1f}  "
+                          f"bar {measurement['pixel_threshold']:3d}")
 
             measurements.record(now, measurement, worth_keeping)
 
