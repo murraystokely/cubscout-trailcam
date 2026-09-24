@@ -969,15 +969,84 @@ class RankingTheShortlist(unittest.TestCase):
                 manifest.record_detections(database, run, frame_id, boxes)
             database.commit()
 
-            spans = shortlist.events_with_people(database, run)
+            spans = shortlist.events_with_people(database, [run])
             self.assertEqual(len(spans), 1)
             self.assertEqual(spans[0][1], datetime(2026, 9, 13, 16, 11, 0))
             self.assertEqual(spans[0][2], datetime(2026, 9, 13, 16, 11, 58))
 
-            found = shortlist.candidates(database, run)
+            found = shortlist.candidates(database, [run])
             kept = shortlist.without_people(found, spans)
             self.assertEqual([e["path"] for e in kept],
                              ["cam/2026-09-13/171100.jpg"])
+            database.close()
+        finally:
+            shutil.rmtree(directory)
+
+    def test_two_runs_are_a_union_with_the_surer_box(self):
+        """v5a and redwood each find animals the other leaves under 0.8."""
+        directory = Path(tempfile.mkdtemp())
+        try:
+            database = manifest.open_manifest(directory / "t.sqlite")
+            frames = [bursts.Frame(
+                camera="cam", day="2026-09-17",
+                relative_path=f"cam/2026-09-17/{name}.jpg",
+                absolute_path=Path("x"),
+                captured_at=datetime(2026, 9, 17, 8, minute, 0),
+                camera_decision=None, mean_luma=None, largest_area=None,
+                code_version=None, metrics=None, kind="photo")
+                for name, minute in (("squirrel", 0), ("crow", 5),
+                                     ("leaf", 10), ("walker", 15))]
+            manifest.add_frames(database, frames)
+            ids = {row["path"].rsplit("/", 1)[1][:-4]: row["id"]
+                   for row in database.execute("SELECT id, path FROM frames")}
+            v5a = manifest.start_run(database, "detector", "MDV5A")
+            redwood = manifest.start_run(database, "detector", "redwood")
+
+            def box(conf, category="animal"):
+                return Box(category, conf, 0.4, 0.4, 0.1, 0.1, None)
+
+            # squirrel: redwood sure, v5a not.  crow: the reverse, and
+            # redwood also thinks the crow's feet are a person at 0.54.
+            # leaf: neither.  walker: an animal to v5a, but a person to
+            # BOTH models somewhere in the frame.
+            manifest.record_detections(database, v5a, ids["squirrel"], [box(0.7)])
+            manifest.record_detections(database, redwood, ids["squirrel"], [box(0.9)])
+            manifest.record_detections(database, v5a, ids["crow"], [box(0.85)])
+            manifest.record_detections(database, redwood, ids["crow"],
+                                       [box(0.6), box(0.54, "person")])
+            manifest.record_detections(database, v5a, ids["leaf"], [box(0.5)])
+            manifest.record_detections(database, redwood, ids["leaf"], [box(0.7)])
+            manifest.record_detections(database, v5a, ids["walker"],
+                                       [box(0.81), box(0.4, "person")])
+            manifest.record_detections(database, redwood, ids["walker"],
+                                       [box(0.9, "person")])
+            database.commit()
+
+            found = shortlist.candidates(database, [v5a, redwood])
+            by_name = {e["path"].rsplit("/", 1)[1][:-4]: e for e in found}
+            self.assertEqual(set(by_name), {"squirrel", "crow", "walker"})
+            self.assertEqual(by_name["squirrel"]["run_id"], redwood)
+            self.assertEqual(by_name["squirrel"]["confidence"], 0.9)
+            self.assertEqual(by_name["crow"]["run_id"], v5a)
+
+            # The walker goes (both models saw a person); the crow stays
+            # (only redwood did, and it was looking at the feet).
+            spans = shortlist.events_with_people(database, [v5a, redwood])
+            kept = shortlist.without_people(found, spans)
+            self.assertEqual(sorted(e["path"].rsplit("/", 1)[1][:-4]
+                                    for e in kept), ["crow", "squirrel"])
+
+            # With redwood alone, its word is the only word, so the crow
+            # would go too.  That is the single-run rule, unchanged.
+            alone = shortlist.events_with_people(database, [redwood])
+            self.assertEqual(
+                sorted(e["path"].rsplit("/", 1)[1][:-4] for e in
+                       shortlist.without_people(
+                           shortlist.candidates(database, [redwood]), alone)),
+                ["squirrel"])
+
+            totals = shortlist.looked_at(database, [v5a, redwood])
+            self.assertEqual(totals["frames"], 4)      # not 8
             database.close()
         finally:
             shutil.rmtree(directory)

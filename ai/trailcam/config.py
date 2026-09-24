@@ -202,6 +202,11 @@ CLIPPED_PENALTY = 0.35
 # cost of a low bar here is a crow left out because somebody walked past
 # a minute earlier, which is nothing; the cost of a high bar is a person
 # on a public web page.
+#
+# When the shortlist is built from more than one detector, every one of
+# them has to clear this bar in the event.  Redwood alone puts a crow's
+# feet at 0.54 and a Cheerio at 0.52; the real people score over 0.9 with
+# both models.
 PERSON_NEARBY = 0.3
 
 # Sharpness is the variance of the Laplacian over the animal box.  Rather

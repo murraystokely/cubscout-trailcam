@@ -71,7 +71,17 @@ export WILDLIFE_PHOTOS=/Volumes/datasets/trailcam/photos   # the NAS
 
 .venv/bin/python -m trailcam scan --kind all     # after the next sync:
 .venv/bin/python -m trailcam detect --extend 9   # same run, only the new frames
+.venv/bin/python -m trailcam shortlist --run 9 --run 13   # v5a and redwood together
 ```
+
+`--run` repeated takes the union of several detectors: a frame is in if
+any of them is sure it holds an animal, with whichever box was surer, and
+out if all of them saw a person in the same event (one model's lone
+"person" is, on this archive, usually a crow's feet). Over this archive v5a
+and redwood each find real animals the other leaves just under the line
+and neither puts an empty frame over it, so together they make a longer
+list with no more junk in it
+([results](results/2026-09-19-v5a-against-redwood-over-everything.md)).
 
 `--extend` reopens a finished run and gives it the frames it has not
 seen. A run is per execution, but the thing anyone ranks or compares is
