@@ -68,6 +68,11 @@ the actual sin.
   animals the other misses (redwood about thirty more visits); redwood is
   the better person detector and the noisier one on sunlit paving; v5a
   stays the reference, the gallery should use both.
+- [2026-09-20 --- the squirrel morning on wildlifecam11](2026-09-20-the-squirrel-morning-on-wildlifecam11.md)
+  --- 633 photographs off one card: 121 animal frames in 17 visits, every
+  crop opened a grey squirrel, and 107 of them in a single 44-minute morning
+  before the battery went flat. The afternoon before, the 16:00 hour took
+  240 photographs with an animal in none of them.
 - [`shortlists/`](shortlists/) --- the ranked "best animal pictures" list
   each pass produced, one CSV per run.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each
