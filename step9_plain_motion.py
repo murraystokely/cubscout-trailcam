@@ -110,16 +110,31 @@ LOOP_DELAY = 0.25
 #                       saving until the hour has moved on.
 #
 # The numbers.  A 32 GB card has about 20 GB free and a photograph here
-# is 0.5 to 0.9 MB; the darkness gate makes the night free, so a day
-# costs about MAX_SAVES_PER_HOUR x 13 hours x 0.7 MB.  At 720 an hour
-# that is 6.5 GB a day from a camera that never stops triggering: a
-# three-day campout fits with room to spare, a windy week does not, and
-# the 95% disk guard below is what stops it then.  Step 8 used 240 and 2
-# seconds for a month; that was set for cards left out for weeks, and it
-# threw away 13 frames of a crow that were wanted.  We would rather have
-# the frames.
+# is 0.5 to 0.9 MB (a busy leafy scene makes the bigger JPEGs); the
+# darkness gate makes the night free, so a day costs at most about
+# MAX_SAVES_PER_HOUR x 12 hours x 0.9 MB.  Step 8 used 240 and 2 seconds
+# for a month; that was set for cards left out for weeks, and it threw
+# away 13 frames of a crow that were wanted.  We would rather have the
+# frames.
+#
+# The ceiling started at 720, and the last backyard test before the
+# campout showed it was too low.  wildlifecam9 on the patio spent its
+# 720 on sun moving on the pavers, and ran out at 10:14:03 -- five
+# seconds into a crow's walk across the patio.  The camera saved 4 frames
+# of the crow and held every frame of the rest of the walk.  Replayed
+# from the CSV at 1,440 the camera is never held and keeps about 48
+# frames of that walk.
+#
+# What 1,440 costs, measured from this week's cards replayed at 1,440:
+# a real day was 1.4 to 2.5 GB, so a three-day campout needs 4 to 8 GB of
+# the 20.  A camera that hits the ceiling every daylight hour would fill
+# its card in one to two days -- that takes sunlit leaves in the
+# picture all day, and the 95% disk guard below stops it before the card
+# is completely full.  Step 8 stays at 720: its photographs are twice
+# the size (a plain and an annotated copy), so the same ceiling costs it
+# twice the card.
 SAVE_COOLDOWN = 1.0
-MAX_SAVES_PER_HOUR = 720
+MAX_SAVES_PER_HOUR = 1440
 
 
 # ------------------------------------------------------------
