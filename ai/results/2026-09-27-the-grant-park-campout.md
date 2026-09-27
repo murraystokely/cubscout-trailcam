@@ -150,7 +150,27 @@ pass of MDv5a under run 13. The rows are purged and `detect.py` now
 loads `name`, the run's model, which is what the docstring always said
 it did.
 
-## 6. What this does not establish
+## 6. The training bursts: did the motion rules miss anything?
+
+Only the three IMX500 cameras (step 8) record training bursts, the frames
+saved with the motion rules switched off. In the campout folders that is
+**203 frames**: 66 on wildlifecam10, 70 on wildlifecam11, 67 on
+wildlifecam12. (The four folders hold nothing but campout material:
+every file on disk that is not in `frames.csv` is a 0-byte power-pull
+file.) Both runs were extended over them. The camera called 131 of the
+203 `quiet`, 34 `lighting change`, 28 `strong motion`, 6 `shadow`.
+
+38 frames had an animal at 0.2 or above from either model, the highest
+0.84 (redwood, on the sky while wildlifecam10 was being carried). All 38
+were looked at as crops: a survey stake in the grass, people at the
+fence, a rock, a gap in the oak leaves, dirt, a tuft of grass, and the
+sky. **No animal in any of them**, so on the unbiased sample nothing was
+missed. Three cameras and 203 frames is not much of a sample, and the
+five step 9 cameras, which saw most of the animals, keep no training
+bursts at all; that is a gap in what the weekend can say about the
+rules.
+
+## 7. What this does not establish
 
 - Species names are by eye from crops. "Fairly sure" and "unsure" on each
   card mean what they say; there is still no species classifier.
@@ -163,7 +183,7 @@ it did.
   right within a boot. Across a restart the clock jumps, and two visits
   either side of one are two visits whatever the animal did.
 
-## 7. Reproducing it
+## 8. Reproducing it
 
 ```bash
 export WILDLIFE_PHOTOS=/Volumes/datasets/trailcam/photos
