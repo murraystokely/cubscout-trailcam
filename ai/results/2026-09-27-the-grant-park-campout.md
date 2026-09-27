@@ -1,4 +1,4 @@
-# The Grant Park campout: a deer, three flickers, two rabbits, and 7,936 photographs
+# The Grant Park campout: a deer, three flickers, a rabbit, and 7,936 photographs
 
 **Run:** afternoon of 27 September 2026, on the Mac Studio, from the
 handoff the ThinkPad wrote that day. Run 9 (MDv5a) extended over the
@@ -62,8 +62,10 @@ and the doubtful ones at full size with the box drawn on.
   (0.87), and a **northern flicker** on the ground under the oaks (0.84;
   the red malar stripe of a male shows in the next frame).
 - **wildlifecam13** (trail edge by chaparral, step 9): a **cottontail
-  rabbit** in morning sun (0.90), a second rabbit at first light (0.81), a
-  **northern flicker** taking off with the salmon-red under-wing showing
+  rabbit** in morning sun (0.90), a ground bird at first light cut off by
+  the bottom of the frame (0.82; first written up as a second rabbit, and
+  corrected on a second look: dark, upright, tail cocked, probably a quail
+  or a spotted towhee), a **northern flicker** taking off with the salmon-red under-wing showing
   (0.91), and nine visits of small birds on the trail or in the tree, most
   of which I cannot name: a towhee or two, something dove-like landing, a
   crow taking off cut in half by the frame edge.
@@ -78,8 +80,9 @@ and the doubtful ones at full size with the box drawn on.
   **mockingbirds**; a bird landing; and one "small brown bird in the grass"
   at 0.81 that may be a leaf. That last one is the weakest card on the
   page and is labelled so.
-- **wildlifecam15** (campground field, step 9): one **crow or raven**
-  silhouette overhead (0.80), and two more corvids a few minutes later.
+- **wildlifecam15** (campground field, step 9): one **raven or crow**
+  silhouette overhead (0.80), and two more corvids a few minutes later;
+  the wedge tail in `021302_710` leans raven.
   That is the only animal in 2,586 candidates on this camera.
 
 No coyote, bobcat, turkey, squirrel or jackrabbit, on any camera, at any
@@ -108,7 +111,46 @@ checked for a person in the same frame, and the whole frame was looked
 at.** The highest person score on any pick is 0.11 (the deer frame, which
 has a fence and a parked car in the far background and nobody in it).
 
-## 5. What this does not establish
+## 5. MDv6 redwood over the same frames
+
+Run 13 (md1000-redwood, the full-size v6 model; not the spruce or sorrel
+variants) was extended over the same sixteen folders, 22,376 frames in
+about 27 minutes at 0.08 s/frame. Over the 7,936 campout frames:
+
+| | v5a | redwood |
+|---|---:|---:|
+| animal >= 0.5 | 564 | 3,007 |
+| animal 0.2 to 0.5 | 2,239 | 1,303 |
+| person >= 0.8 | 3,271 | 2,920 |
+
+On the 22 picks the two agree to within a few hundredths, and redwood is
+higher on most of the dim ones: the dusk deer 0.90 against 0.79, the bird
+in the tree 0.84 against 0.57, the second mockingbird 0.85 against 0.66.
+Its extra 2,443 frames at 0.5 are almost entirely one thing: **the dark
+underside of the shelter roof on wildlifecam15**, a full-width band at
+17% of the frame, scored as an animal at 0.6 to 0.88 in over a thousand
+frames where v5a puts it at 0.1 to 0.2. That is the same sunlit-paving
+habit redwood showed on the patio in September, on a different texture.
+
+Every frame where redwood had an animal at 0.5 (or at 0.2 with a box over
+0.3% of the frame) and v5a had nothing at 0.2 was looked at: 1,659 frames
+in 170 visits. Besides the roof they are people, sky, the sun, hands over
+the lens, a survey stake and a wagon. The one animal among them is a
+raven in the crow visit already on the page, five seconds before v5a's
+frame. **Redwood changes no pick.** The union rule from
+[2026-09-19](2026-09-19-v5a-against-redwood-over-everything.md) still
+holds: each model finds real animals near the other's line, and neither
+puts an empty frame over it, but at this site the "empty frame" redwood
+puts over the line a thousand times is a roof, and a gallery built from
+the union would need the person-and-roof filter before it was usable.
+
+A bug found on the way: `detect --extend` loaded the *default* model
+rather than the run's own, so the first attempt filed a second full
+pass of MDv5a under run 13. The rows are purged and `detect.py` now
+loads `name`, the run's model, which is what the docstring always said
+it did.
+
+## 6. What this does not establish
 
 - Species names are by eye from crops. "Fairly sure" and "unsure" on each
   card mean what they say; there is still no species classifier.
@@ -121,7 +163,7 @@ has a fence and a parked car in the far background and nobody in it).
   right within a boot. Across a restart the clock jumps, and two visits
   either side of one are two visits whatever the animal did.
 
-## 6. Reproducing it
+## 7. Reproducing it
 
 ```bash
 export WILDLIFE_PHOTOS=/Volumes/datasets/trailcam/photos
@@ -134,7 +176,8 @@ tail -n +2 /Volumes/datasets/trailcam/derived/grant-park-site2/frames.csv | cut 
 done
 ```
 
-Then join `frame_results` for run 9 onto the paths in `frames.csv`, group
+Then `--extend 13` for redwood over the same folders, and join
+`frame_results` for run 9 onto the paths in `frames.csv`, group
 animal boxes at 0.2 or above by (camera, boot, uptime_s) with a 60 s gap,
 and look at every visit. `trailcam shortlist` was not used: it groups by
 `captured_at`, which is the camera clock, and that is exactly the thing
