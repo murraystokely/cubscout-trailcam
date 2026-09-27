@@ -23,9 +23,10 @@ Both paths now point at a numbered step, and this file contains no
 motion detection at all.  That is the point: the next time one track
 learns something, the other one is a file you can actually find.
 
-Both programs write into the same <date>/<HHMMSS>.jpg layout under
-PHOTO_DIR, so nginx and sync_cameras.py cannot tell them apart.  step8
-adds _annotated.jpg beside each picture; both write a .json sidecar.
+Both programs write into the same <date>/<HHMMSS>_<mmm>.jpg layout
+under PHOTO_DIR, so nginx and sync_cameras.py cannot tell them apart.
+step8 adds _annotated.jpg beside each picture; both write a .json
+sidecar and a measurements-<camera>-<boot>.csv per day.
 """
 
 import os

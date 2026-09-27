@@ -56,7 +56,7 @@ import os
 import shutil
 import socket
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
@@ -357,8 +357,32 @@ MEASUREMENT_FIELDS = [
 ]
 
 
+def unused_name(day_directory, now):
+    """<time>_<milliseconds> for a new photograph, never one already taken.
+
+    A Pi with no network restarts its clock from the last time it saved
+    it, so after a restart it can live through the same minutes twice.
+    At the campout wildlifecam10 did, and saved six photographs over
+    ones it had taken a day earlier.  If the name is taken, move on a
+    millisecond; the real time is in the JSON either way.
+    """
+    while True:
+        name = f"{now.strftime('%H%M%S')}_{now.microsecond // 1000:03d}"
+        if not os.path.exists(f"{day_directory}/{name}.jpg"):
+            return name
+        now += timedelta(milliseconds=1)
+
+
 class Measurements:
-    """Appends one row per look, into a CSV per day."""
+    """Appends one row per look, into a CSV per day and per boot.
+
+    The file is measurements-<camera>-<boot>.csv.  With no network the
+    clock restarts from the last time it was saved, so after a restart
+    the camera can come back to a day folder it has already written in,
+    and a file named only after the camera would mix two runs -- or be
+    overwritten by the other run's file when the cards are copied.  At
+    the Grant Park campout that happened on six cards.
+    """
 
     def __init__(self):
         self.day = None
@@ -370,7 +394,7 @@ class Measurements:
         if self.day != day_directory:
             self.close()
             os.makedirs(day_directory, exist_ok=True)
-            path = f"{day_directory}/measurements-{CAMERA_NAME}.csv"
+            path = f"{day_directory}/measurements-{CAMERA_NAME}-{BOOT_ID}.csv"
             new_file = not os.path.exists(path)
             self.handle = open(path, "a", newline="")
             self.writer = csv.DictWriter(self.handle,
@@ -561,8 +585,7 @@ def main():
                 # 2,225 files, losing every frame of a burst but the
                 # last -- which are the ones where something is moving
                 # fastest.
-                stamp = f"{now.strftime('%H%M%S')}_{now.microsecond // 1000:03d}"
-                filename = f"{day_directory}/{stamp}.jpg"
+                filename = f"{day_directory}/{unused_name(day_directory, now)}.jpg"
                 picam2.capture_file(filename)      # from "main": the big one
                 write_sidecar(filename, now, measurement)
                 last_save_time = moment
