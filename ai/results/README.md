@@ -78,6 +78,13 @@ the actual sin.
   cost nothing on this data, but one squirrel cannot set a number and the
   archive's 49 px crow and the deer-at-30-m geometry say 599 is too high
   for a park.
+- [2026-09-27 --- the Grant Park campout](2026-09-27-the-grant-park-campout.md)
+  --- 7,936 campout photographs (by boot, not by date) through MDv5a in 14
+  minutes; 232 visits looked at by eye, 22 real: a deer mid-leap, three
+  northern flickers, a rabbit, a scrub-jay, a raven, a dozen small birds;
+  everything else on the field camera was people. MDv6 redwood over the
+  same frames changes no pick and scores the shelter roof as an animal a
+  thousand times.
 - [`shortlists/`](shortlists/) --- the ranked "best animal pictures" list
   each pass produced, one CSV per run.
 - [`benchmarks/`](benchmarks/) --- how long the detector takes on each

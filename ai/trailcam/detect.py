@@ -112,7 +112,10 @@ def run(camera=None, day=None, limit=None, new_run=False, crops=None,
               f"(first run downloads the weights into {config.MODEL_DIR})...")
 
     started = time.time()
-    detector = MegaDetector(model=model, threads=threads)
+    # `name`, not `model`: under --extend the run's own model is the one to load,
+    # and `model` is whatever the command line said, usually nothing.  Loading
+    # the default here filed a full pass of MDv5a under the redwood run.
+    detector = MegaDetector(model=name, threads=threads)
 
     if not quiet:
         print(f"Loaded in {time.time() - started:.0f}s on "
