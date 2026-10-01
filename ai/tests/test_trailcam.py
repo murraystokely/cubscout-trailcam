@@ -159,6 +159,65 @@ class FindingFrames(unittest.TestCase):
         self.assertEqual(bursts.find_frames(photo_root="/nonexistent"), [])
 
 
+class NamesThatSurviveAClockRestart(unittest.TestCase):
+    """The names step 8 and step 9 write since the Grant Park campout.
+
+    With no network a camera's clock restarts from the last time it was
+    saved, so two runs can write into one day folder.  Photographs are
+    named to the millisecond, and each boot keeps its own measurements
+    file; the laptop must read both, next to the older names.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.day = self.root / "wildlifecam10" / "2026-09-24"
+        training = self.day / "training"
+        training.mkdir(parents=True)
+
+        (training / "train_053327_978.jpg").write_bytes(b"jpeg")
+        (training / "train_053329_101.jpg").write_bytes(b"jpeg")
+
+        # A backyard run in the old one-file-per-camera log, and a
+        # campout run in its own per-boot log, with step 8's two new
+        # columns on the end.
+        (self.day / "measurements-wildlifecam10.csv").write_text(
+            "time,file,mean_luma,largest_area,decision\n"
+            "2026-09-24T05:33:27.978,train_053327_978.jpg,91.0,0,quiet\n")
+        (self.day / "measurements-wildlifecam10-971c0559.csv").write_text(
+            "time,file,mean_luma,largest_area,decision,uptime_s,boot\n"
+            "2026-09-24T05:33:29.101,train_053329_101.jpg,92.5,583,"
+            "confirmed motion,80220.6,971c0559\n")
+
+        # step 8 photographs, to the millisecond, one of them moved on a
+        # millisecond because its name was taken.
+        for name, boot in (("124126_669", "971c0559"),
+                           ("124126_670", "10e79be4")):
+            (self.day / f"{name}.jpg").write_bytes(b"jpeg")
+            (self.day / f"{name}_annotated.jpg").write_bytes(b"jpeg")
+            (self.day / f"{name}.json").write_text(json.dumps(
+                {"camera": "wildlifecam10", "boot": boot}))
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def test_reads_old_and_per_boot_measurement_files(self):
+        first, second = bursts.find_frames(photo_root=self.root)
+
+        self.assertEqual(first.camera_decision, "quiet")
+        self.assertEqual(second.camera_decision, "confirmed motion")
+        self.assertEqual(second.largest_area, 583)
+
+    def test_millisecond_photographs_are_found_once_each(self):
+        found = photos.find_photos(photo_root=self.root)
+
+        self.assertEqual([Path(f.relative_path).name for f in found],
+                         ["124126_669.jpg", "124126_670.jpg"])
+        self.assertEqual([f.metrics["boot"] for f in found],
+                         ["971c0559", "10e79be4"])
+        self.assertEqual(found[1].captured_at,
+                         datetime(2026, 9, 24, 12, 41, 26, 670000))
+
+
 class ManifestBase(unittest.TestCase):
 
     def setUp(self):

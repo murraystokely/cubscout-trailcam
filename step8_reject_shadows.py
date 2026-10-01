@@ -60,7 +60,7 @@ import socket
 import sys
 import time
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
@@ -887,6 +887,11 @@ MEASUREMENT_FIELDS = [
     "ai_class",
     "ai_confidence",
     "decision",
+    # Which run the row belongs to, as in the JSON sidecars.  Added at the
+    # end so that anything reading the older columns by position still
+    # works.
+    "uptime_s",
+    "boot",
 ]
 
 measurement_file = None
@@ -895,7 +900,16 @@ measurement_day = None
 
 
 def log_measurement(now, row):
-    """Append one row of numbers, starting a new file each day."""
+    """Append one row of numbers, starting a new file each day.
+
+    One file per boot, measurements-<camera>-<boot>.csv, not one per
+    camera.  With no network the clock restarts from the last time it
+    was saved, so a camera can come back to a day folder it has already
+    written in -- the backyard morning it was switched off in, say --
+    and one shared file would mix two runs, or be overwritten by the
+    other run's file when the cards are copied.  At the Grant Park
+    campout it happened on six cards.
+    """
     global measurement_file, measurement_writer, measurement_day
 
     day = now.strftime("%Y-%m-%d")
@@ -907,7 +921,7 @@ def log_measurement(now, row):
         day_directory = f"{photo_dir}/{day}"
         os.makedirs(day_directory, exist_ok=True)
 
-        path = f"{day_directory}/measurements-{CAMERA_NAME}.csv"
+        path = f"{day_directory}/measurements-{CAMERA_NAME}-{BOOT_ID}.csv"
         is_new = not os.path.exists(path)
 
         measurement_file = open(path, "a", newline="")
@@ -919,7 +933,8 @@ def log_measurement(now, row):
 
         measurement_day = day
 
-    measurement_writer.writerow(row)
+    measurement_writer.writerow(dict(row, boot=BOOT_ID,
+                                     uptime_s=seconds_since_boot()))
     measurement_file.flush()
 
 
@@ -927,12 +942,30 @@ def log_measurement(now, row):
 # Saving
 # ------------------------------------------------------------
 
+def unused_name(day_directory, now):
+    """<time>_<milliseconds> for a new photograph, never one already taken.
+
+    Milliseconds, like step 9 and the training bursts, because two saves
+    in one second would otherwise share a name.  And a check that the
+    name is free, because a Pi with no network restarts its clock from
+    the last time it saved it, and so can live through the same minutes
+    twice.  At the campout wildlifecam10 did, and saved six photographs
+    over ones it had taken a day earlier.  If the name is taken, move on
+    a millisecond; the real time is in the JSON either way.
+    """
+    while True:
+        name = f"{now.strftime('%H%M%S')}_{now.microsecond // 1000:03d}"
+        if not os.path.exists(f"{day_directory}/{name}.jpg"):
+            return name
+        now += timedelta(milliseconds=1)
+
+
 def save_event(now, image, decision, measurements, ai_detections):
     """Write the photograph and its JSON description."""
     day_directory = f"{photo_dir}/{now.strftime('%Y-%m-%d')}"
     os.makedirs(day_directory, exist_ok=True)
 
-    base_filename = now.strftime("%H%M%S")
+    base_filename = unused_name(day_directory, now)
 
     original_filename = f"{day_directory}/{base_filename}.jpg"
     json_filename = f"{day_directory}/{base_filename}.json"

@@ -26,7 +26,8 @@ The photographs the cameras keep cannot be used to grade the cameras:
 
 So `step8 --record` also saves **training bursts** --- runs of frames with
 the motion rules switched off --- and writes a row into
-`measurements-<camera>.csv` for every one of them saying what the rules
+`measurements-<camera>-<boot>.csv` (one per boot; older cards wrote
+`measurements-<camera>.csv`) for every one of them saying what the rules
 *would* have decided. Those frames are an unbiased sample. All that is
 missing is a trustworthy answer to "was there actually an animal in it",
 and hand-labelling tens of thousands of frames is not happening.
