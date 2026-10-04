@@ -52,8 +52,8 @@ Things to know before plugging one in:
 - **First fix: about a minute and a half in the open.** Measured on
   2026-10-04 with the dongle on a laptop in the back garden, cold (the
   VK-162 keeps nothing between plug-ins): first sentence at once, time of
-  day at 0:59, first valid fix at 1:15, trusted fix (below) at **1:20**,
-  with 7 satellites and HDOP 1.1. Under oak canopy it will be slower, and
+  day at 0:59, first valid fix at **1:15**, with 7 satellites and HDOP
+  1.1; the trust test (below) would accept it at 1:25. Under oak canopy it will be slower, and
   the dongle's antenna is small, so the program has to be patient and say
   what it is waiting for.
 - **Position: a few metres.** Over the ten minutes after the trusted fix,
@@ -144,9 +144,8 @@ What it would not:
   the clock's error before correcting it, does not write `gps.json` or the
   per-boot log, and has no idea about boots or attachments. That is most
   of `wildlife_gps.py`, and it all stays.
-- The trust test stays too. gpsd's `mode: 3` ("3D fix") replaces our
-  `A`-and-four-satellites check, but the five-agreeing-seconds rule and
-  the floor-date check are ours either way.
+- The trust test stays too, though gpsd's `mode: 3` ("3D fix") would
+  stand in for our `A`-and-four-satellites check.
 
 What it would add: a package on every image, its configuration
 (`/etc/default/gpsd`: which device, start on hotplug, `-n` to poll before
@@ -216,32 +215,30 @@ attachment never overwrites what the first one learned.
 
 ## Nothing is written until a fix is trusted
 
-A receiver that has just been plugged in spends its first seconds to
-minutes saying `V` (no fix), then often gives a few readings that are
-valid by its own account but wrong: a position hundreds of metres off, or
-a time from a stale almanac. None of that may reach a file, a photograph
-or the clock.
+A receiver that has just been plugged in spends its first minute or so
+saying `V` (no fix). Its first few valid readings can be a little off: in
+the garden test the first valid position was 3.6 m from where it settled,
+and its sentence arrived 1.2 s late. Waiting a few seconds is enough.
 
-A fix is **trusted** when all of these hold:
+Every sentence's checksum is checked first, and a line with a wrong one is
+dropped unread. Then a fix is **trusted** when:
 
-1. the sentence's checksum is right (anything else is dropped unread);
-2. `RMC` says `A`, `GGA` says fix quality 1 or better, at least four
-   satellites, and HDOP of 5 or less;
-3. the date is not earlier than the `timesync/clock` floor, which is the
-   earliest date this card could honestly claim, so a GPS date before it
-   means the receiver is wrong, not the card (this also catches week-number
-   rollover bugs without having to know which firmware has them);
-4. the position is not `0, 0` and is not blank;
-5. **five consecutive seconds** pass all of the above, agree with each
-   other's position to within about 50 m, and their GPS times advance in
-   step with the Pi's monotonic clock to within a second.
+1. the receiver has said `A` (valid) with **at least 4 satellites for 10
+   seconds in a row**, and
+2. the **year is 2026 or later**. A receiver with an old firmware's
+   week-counting bug can report a date decades out; this one line catches
+   it.
+
+The latest of those ten seconds is the one used, for both the position
+and the clock. In the garden test the first valid fix was at 1:15, so this
+would have trusted it at 1:25.
 
 Until the first trusted fix of an attachment, `wildlife_gps.py` writes
 **nothing**: no `gps.json`, no log row, no clock change. It prints a status
 line to the journal once a minute (`waiting: 3 satellites, no fix yet`) so
 that `journalctl -u wildlife-gps` says what it is waiting for. If the fix is
 lost mid-attachment (someone's hand over the dongle, the tree canopy), it
-stops writing and has to pass the five-second test again before it starts.
+stops writing and waits for another 10 seconds in a row before it starts.
 
 A `gps.json` left over from an earlier boot is left alone until this boot's
 first trusted fix replaces it. The camera programs already treat it as
@@ -685,7 +682,7 @@ Plus, in `step10_ai_camera.py`, a dozen lines of step 8's `time.time()`
 moved to `time.monotonic()`.
 
 **`wildlife_gps.py`** is new and standalone: the NMEA parser (~60), the
-trusted-fix test (~40), measure-then-set (~30), `gps.json` with its median
+trust test (~15), measure-then-set (~30), `gps.json` with its median
 and attachments (~50), the log (~30), the status line, the main loop and
 explanations in the style of the step files --- 300 to 400 lines in all.
 
@@ -857,9 +854,9 @@ and there is nothing hidden.
   end to end without a dongle, with the clock-setting call replaced so the
   test does not change the test machine's time.
 - **Nothing untrusted gets written.** Feed the replay a cold start, a
-  burst of valid-looking but scattered fixes, a `0,0` fix, a date before
-  the floor and a corrupted checksum, and check that no `gps.json`, no log
-  row and no clock step appears until five good seconds in a row.
+  valid run broken after 9 seconds, a year before 2026 and a corrupted
+  checksum, and check that no `gps.json`, no log row and no clock step
+  appears until 10 good seconds in a row.
 - **Two attachments in one boot.** Replay, stop, shift the fake clock by a
   known drift, replay again: `attachments` gains a second entry, the first
   is untouched, and the measured `offset_s` is the shift.
