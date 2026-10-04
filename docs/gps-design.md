@@ -49,17 +49,27 @@ Things to know before plugging one in:
 
 - **A Pi Zero 2 W needs a micro-USB OTG adapter**, on the port marked USB,
   not PWR. The Pi 4s and 5s take it directly.
-- **First fix is slow.** With open sky, under a minute. Under oak canopy, or
-  on a cold start after travelling, it can be several minutes, and the
-  dongle's antenna is small. The program has to be patient and say what it
-  is waiting for.
+- **First fix: about a minute and a half in the open.** Measured on
+  2026-10-04 with the dongle on a laptop in the back garden, cold (the
+  VK-162 keeps nothing between plug-ins): first sentence at once, time of
+  day at 0:59, first valid fix at **1:15**, with 7 satellites and HDOP
+  1.1; the trust test (below) would accept it at 1:25. Under oak canopy it will be slower, and
+  the dongle's antenna is small, so the program has to be patient and say
+  what it is waiting for.
+- **Position: a few metres.** Over the ten minutes after the trusted fix,
+  half the fixes were within 2.3 m of their median and 95% within 5.8 m;
+  the first valid fix was 3.6 m off. A median over a few minutes is
+  plenty for a trail camera.
 - **It costs battery, and money.** Roughly a fifth of what a Zero 2 W
   draws, and a dongle per camera adds up. So we do not leave one on each
   camera: a dongle or two go round the cameras at setup and again at
   takedown (decided 2026-10-04). Everything below is designed for that.
-- **No PPS over USB**, so the time is good to a few hundred milliseconds,
-  not microseconds. That is a thousand times better than we have now and
-  more than the photographs need.
+- **No PPS over USB**, so time comes from the text sentences, not a
+  precise pulse. Measured: once the leap seconds are right (see "Leap
+  seconds"), sentences arrive about **45 ms** after the second they describe,
+  steadily. Far better than the photographs need. The very first valid
+  sentence arrived 1.2 s late, one more reason not to trust the first
+  second.
 - **Only our program reads the port.** That takes no setup: Raspberry Pi
   OS does not install `gpsd`, and the udev rule below tells `ModemManager`,
   if an image has it, to leave the dongle alone (one property on the rule,
@@ -134,9 +144,8 @@ What it would not:
   the clock's error before correcting it, does not write `gps.json` or the
   per-boot log, and has no idea about boots or attachments. That is most
   of `wildlife_gps.py`, and it all stays.
-- The trust test stays too. gpsd's `mode: 3` ("3D fix") replaces our
-  `A`-and-four-satellites check, but the five-agreeing-seconds rule and
-  the floor-date check are ours either way.
+- The trust test stays too, though gpsd's `mode: 3` ("3D fix") would
+  stand in for our `A`-and-four-satellites check.
 
 What it would add: a package on every image, its configuration
 (`/etc/default/gpsd`: which device, start on hotplug, `-n` to poll before
@@ -206,32 +215,30 @@ attachment never overwrites what the first one learned.
 
 ## Nothing is written until a fix is trusted
 
-A receiver that has just been plugged in spends its first seconds to
-minutes saying `V` (no fix), then often gives a few readings that are
-valid by its own account but wrong: a position hundreds of metres off, or
-a time from a stale almanac. None of that may reach a file, a photograph
-or the clock.
+A receiver that has just been plugged in spends its first minute or so
+saying `V` (no fix). Its first few valid readings can be a little off: in
+the garden test the first valid position was 3.6 m from where it settled,
+and its sentence arrived 1.2 s late. Waiting a few seconds is enough.
 
-A fix is **trusted** when all of these hold:
+Every sentence's checksum is checked first, and a line with a wrong one is
+dropped unread. Then a fix is **trusted** when:
 
-1. the sentence's checksum is right (anything else is dropped unread);
-2. `RMC` says `A`, `GGA` says fix quality 1 or better, at least four
-   satellites, and HDOP of 5 or less;
-3. the date is not earlier than the `timesync/clock` floor, which is the
-   earliest date this card could honestly claim, so a GPS date before it
-   means the receiver is wrong, not the card (this also catches week-number
-   rollover bugs without having to know which firmware has them);
-4. the position is not `0, 0` and is not blank;
-5. **five consecutive seconds** pass all of the above, agree with each
-   other's position to within about 50 m, and their GPS times advance in
-   step with the Pi's monotonic clock to within a second.
+1. the receiver has said `A` (valid) with **at least 4 satellites for 10
+   seconds in a row**, and
+2. the **year is 2026 or later**. A receiver with an old firmware's
+   week-counting bug can report a date decades out; this one line catches
+   it.
+
+The latest of those ten seconds is the one used, for both the position
+and the clock. In the garden test the first valid fix was at 1:15, so this
+would have trusted it at 1:25.
 
 Until the first trusted fix of an attachment, `wildlife_gps.py` writes
 **nothing**: no `gps.json`, no log row, no clock change. It prints a status
 line to the journal once a minute (`waiting: 3 satellites, no fix yet`) so
 that `journalctl -u wildlife-gps` says what it is waiting for. If the fix is
 lost mid-attachment (someone's hand over the dongle, the tree canopy), it
-stops writing and has to pass the five-second test again before it starts.
+stops writing and waits for another 10 seconds in a row before it starts.
 
 A `gps.json` left over from an earlier boot is left alone until this boot's
 first trusted fix replaces it. The camera programs already treat it as
@@ -241,6 +248,30 @@ The camera programs check too: `where_and_when()` ignores a `gps.json`
 without a `position` block or with an unparseable one. Two checks for the
 same thing, because the cost of a wrong location in a photograph is that
 it is believed.
+
+### Leap seconds: the first twelve minutes are two seconds fast
+
+Found in the first real test, 2026-10-04. GPS time is currently 18 seconds
+ahead of UTC (leap seconds), and the receiver learns that number from a
+satellite message sent only every 12.5 minutes. Until then it uses the
+number in its firmware, which dates from 2012 and says 16. So for roughly
+the first twelve minutes after lock, its time is **2 seconds fast**, while
+passing every check above:
+
+| Time (UTC) | GPS minus laptop clock (laptop on NTP) |
+|---|---|
+| 22:52 -- 23:02, firmware's 16 | +1.95 s |
+| from 23:03, satellites' 18 | −0.04 s |
+
+**We accept it.** A setup or takedown visit is usually shorter than twelve
+minutes, so a camera's clock will usually be set 2 seconds fast. For a
+trail camera that is nothing: the photograph is the same, every camera set
+up the same way is off by the same amount, and a fast setup and a fast
+takedown cancel out of the drift rate. If the dongle stays in longer, the
+receiver corrects itself and the program's ten-minute check picks that up.
+Correcting it ourselves would mean speaking the receiver's binary protocol
+to ask for its leap-second count --- possible, and tested, but not worth the
+code.
 
 ## Where the location lives
 
@@ -345,9 +376,9 @@ next camera --- it repeats the same measure-then-correct every ten minutes,
 with each one going into the log. That is a side effect, not a way we plan
 to run.
 
-NMEA sentences arrive a few hundred milliseconds after the instant they
-describe. That bias is the same at every attachment, so it cancels out of
-the drift rate, and it is well inside the one-second threshold.
+NMEA sentences arrive about 45 ms after the instant they describe
+(measured). That bias is the same at every attachment, so it cancels out
+of the drift rate; it is too small to matter for anything else.
 
 If `/run/systemd/timesync/synchronized` exists, a network time server is
 already in charge: measure and log, but skip step 2. See "When there is a
@@ -651,7 +682,7 @@ Plus, in `step10_ai_camera.py`, a dozen lines of step 8's `time.time()`
 moved to `time.monotonic()`.
 
 **`wildlife_gps.py`** is new and standalone: the NMEA parser (~60), the
-trusted-fix test (~40), measure-then-set (~30), `gps.json` with its median
+trust test (~15), measure-then-set (~30), `gps.json` with its median
 and attachments (~50), the log (~30), the status line, the main loop and
 explanations in the style of the step files --- 300 to 400 lines in all.
 
@@ -823,9 +854,9 @@ and there is nothing hidden.
   end to end without a dongle, with the clock-setting call replaced so the
   test does not change the test machine's time.
 - **Nothing untrusted gets written.** Feed the replay a cold start, a
-  burst of valid-looking but scattered fixes, a `0,0` fix, a date before
-  the floor and a corrupted checksum, and check that no `gps.json`, no log
-  row and no clock step appears until five good seconds in a row.
+  valid run broken after 9 seconds, a year before 2026 and a corrupted
+  checksum, and check that no `gps.json`, no log row and no clock step
+  appears until 10 good seconds in a row.
 - **Two attachments in one boot.** Replay, stop, shift the fake clock by a
   known drift, replay again: `attachments` gains a second entry, the first
   is untouched, and the measured `offset_s` is the shift.
