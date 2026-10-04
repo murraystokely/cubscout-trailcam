@@ -1,0 +1,14 @@
+# Start wildlife_gps.py when a VK-162 GPS dongle is plugged in.
+#
+# Install on a camera:
+#   sudo cp config/90-wildlife-gps.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#
+# Matches the u-blox 7 receiver inside the VK-162 (check with lsusb; ours
+# say 1546:01a7).  It gives the dongle a name that never changes,
+# /dev/gps0; tells ModemManager, if the image has it, that this is not a
+# modem; and asks systemd to start wildlife-gps.service.  See
+# docs/gps-design.md, "Starting it when the dongle appears".
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a7", \
+    SYMLINK+="gps0", ENV{ID_MM_DEVICE_IGNORE}="1", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="wildlife-gps.service"
