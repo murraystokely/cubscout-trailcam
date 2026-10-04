@@ -5,8 +5,12 @@ Every camera in the fleet starts THIS script from systemd.  All it does
 is look at which camera is plugged in and hand over to the newest step
 written for that camera:
 
-    Raspberry Pi AI Camera (IMX500)   ->  step8_reject_shadows.py
-    an ordinary Camera Module         ->  step9_plain_motion.py
+    Raspberry Pi AI Camera (IMX500)   ->  step10_ai_camera.py
+    an ordinary Camera Module         ->  step10_camera_module.py
+
+Step 10 began as an exact copy of step 8 and step 9, which stay as they
+were: finished lessons, like every earlier step.  What step 10 adds is
+in docs/gps-design.md.
 
 Upgrade the hardware, reboot, and the right program runs by itself; no
 service file to edit on eleven Raspberry Pis.
@@ -25,7 +29,7 @@ learns something, the other one is a file you can actually find.
 
 Both programs write into the same <date>/<HHMMSS>_<mmm>.jpg layout
 under PHOTO_DIR, so nginx and sync_cameras.py cannot tell them apart.
-step8 adds _annotated.jpg beside each picture; both write a .json
+The AI Camera's program adds _annotated.jpg beside each picture; both write a .json
 sidecar and a measurements-<camera>-<boot>.csv per day.
 """
 
@@ -38,15 +42,15 @@ PHOTO_DIR = "/var/www/html/photos"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The newest step for each kind of camera.  Bump the name here when a
-# step 10 arrives.  There is deliberately no fallback to an older step:
+# The newest step for each kind of camera.  Bump the names here when a
+# step 11 arrives.  There is deliberately no fallback to an older step:
 # a camera quietly running last week's rules is worse than one that does
 # not start, because the first kind is discovered weeks later on a card
 # full of leaves.
-AI_SCRIPT = os.path.join(HERE, "step8_reject_shadows.py")
-PLAIN_SCRIPT = os.path.join(HERE, "step9_plain_motion.py")
+AI_SCRIPT = os.path.join(HERE, "step10_ai_camera.py")
+PLAIN_SCRIPT = os.path.join(HERE, "step10_camera_module.py")
 
-# step8 cannot start without this, so if the imx500 packages were never
+# The AI program cannot start without this, so if the imx500 packages were never
 # installed, an AI Camera is better off running the plain program than
 # crash-looping in one that needs a model file it does not have.
 AI_MODEL = (
@@ -75,11 +79,12 @@ def choose_program():
     if ai_camera_attached():
         if os.path.exists(AI_SCRIPT) and os.path.exists(AI_MODEL):
             return AI_SCRIPT, "AI Camera found"
-        # An AI camera with no model file or no step8 still takes
+        # An AI camera with no model file or no AI program still takes
         # perfectly good photographs; it just cannot use the sensor's
         # neural network.  The plain program will treat it as an
         # ordinary camera, which is better than not starting.
-        return PLAIN_SCRIPT, ("AI Camera found, but step8 or its model "
+        return PLAIN_SCRIPT, ("AI Camera found, but "
+                              f"{os.path.basename(AI_SCRIPT)} or its model "
                               "is missing -- falling back to the plain "
                               "program")
     return PLAIN_SCRIPT, "ordinary Camera Module"

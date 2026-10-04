@@ -247,8 +247,13 @@ written for that camera:
 
 | camera | program |
 | --- | --- |
-| Raspberry Pi AI Camera (IMX500) | [`step8_reject_shadows.py`](step8_reject_shadows.py) |
-| an ordinary Camera Module | [`step9_plain_motion.py`](step9_plain_motion.py) |
+| Raspberry Pi AI Camera (IMX500) | [`step10_ai_camera.py`](step10_ai_camera.py) |
+| an ordinary Camera Module | [`step10_camera_module.py`](step10_camera_module.py) |
+
+Step 10 starts as an exact copy of step 8 and step 9, which stay as they
+are, finished lessons like every step before them. What step 10 adds ---
+the clock and the place, from a GPS dongle plugged in at setup and
+takedown --- is described in [`docs/gps-design.md`](docs/gps-design.md).
 
 Upgrade the hardware, reboot, and the right program runs by itself --- there
 is no service file to edit on eleven Raspberry Pis.
@@ -324,9 +329,9 @@ sudo systemctl start wildlife-camera
 The service always starts `final_motion_capture.py`, but that program does no
 motion detection itself. It checks what camera is actually plugged in and
 hands straight over: a Raspberry Pi AI Camera goes to
-[`step8_reject_shadows.py`](step8_reject_shadows.py), which uses the AI built
+[`step10_ai_camera.py`](step10_ai_camera.py), which uses the AI built
 into the sensor, and an ordinary Camera Module goes to
-[`step9_plain_motion.py`](step9_plain_motion.py), which reaches nearly the
+[`step10_camera_module.py`](step10_camera_module.py), which reaches nearly the
 same decision without one.
 
 There is deliberately no fallback to an older step. A camera quietly running
