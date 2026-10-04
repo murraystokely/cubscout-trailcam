@@ -60,10 +60,11 @@ Things to know before plugging one in:
 - **No PPS over USB**, so the time is good to a few hundred milliseconds,
   not microseconds. That is a thousand times better than we have now and
   more than the photographs need.
-- **Nothing else may grab the port.** `ModemManager` probes every new
-  `ttyACM` device and can hold it for a while; `gpsd`, if installed, has its
-  own udev rule that takes it. Neither should be on a camera image. Check
-  with `systemctl status ModemManager gpsd` when building the image.
+- **Only our program reads the port.** That takes no setup: Raspberry Pi
+  OS does not install `gpsd`, and the udev rule below tells `ModemManager`,
+  if an image has it, to leave the dongle alone (one property on the rule,
+  `ID_MM_DEVICE_IGNORE`). Nothing to remove from the image, nothing to
+  check.
 
 ## The shape of it
 
@@ -104,39 +105,57 @@ a time server every half minute to half hour; if the clock is off by more
 than about 0.4 s it steps it, otherwise it nudges the clock's rate
 (slewing) until it agrees. Without a network it does nothing except restore
 the saved floor at boot. No `gpsd`, no `chrony`. (`timedatectl
-show-timesync` on a camera confirms which client is running; this should
-be checked on the image before building on it.)
+show-timesync` on a camera confirms which client is running.)
 
-The textbook way to add GPS is two more daemons: **`gpsd`** owns the serial
-port and hands fixes to anything that asks, and **`chrony`** replaces
-timesyncd and treats GPS as one more time source alongside any network
-servers, choosing between them and disciplining the clock's rate. That is
-the right answer for a GPS that is always attached --- a stratum-1 time
-server in a closet, say --- and it is better than ours at sub-millisecond
-time.
+**chrony** would replace timesyncd and steer the clock continuously from
+GPS and network servers together. It is the right tool for a GPS that is
+always attached; for a dongle that visits for five minutes twice a
+deployment it is the wrong shape. It slews rather than steps unless told
+otherwise, and it keeps no record of how wrong the clock was before it
+corrected it, which is the whole point of the takedown plug-in. Not
+considered further.
 
-For a dongle that visits each camera for five minutes twice a deployment it
-buys little and costs a lot:
+**gpsd** is the real question. It is the standard Linux GPS daemon: it owns
+the receiver, decodes whatever the receiver speaks, and hands out fixes as
+JSON on a local socket, with tools (`cgps`, `gpsmon`) that show satellites
+and signal strength. Would `wildlife_gps.py` be simpler as a gpsd client?
 
-- chrony's strength is steering the clock continuously from many samples;
-  five minutes of NMEA (no PPS) at setup is a handful of noisy samples, and
-  it would need configuring to step the clock at any time (`makestep 1 -1`)
-  rather than slew a four-day error away over weeks.
-- It does not produce the one thing the takedown plug-in is for: a logged
-  measurement of how wrong the clock was, at a known uptime, before it was
-  corrected, in a file that travels with the photographs.
-- Neither daemon writes the `gps.json` the camera programs want, so we would
-  still write a program; it would just talk to gpsd instead of the port.
-- chrony replaces timesyncd on eleven cards, and the `timesync/clock` floor
-  the clone instructions rely on; gpsd is another resident daemon on a
-  512 MB Pi.
-- Both are black boxes to a fourth grader, where `$GPRMC,...,A,...` and
-  "the `A` means it knows where it is" is not.
+What gpsd would take off our hands:
 
-So we keep timesyncd for networks and add `wildlife_gps.py` for GPS.
-Revisit chrony if cameras ever need time good to the millisecond across
-each other (matching one animal across two cameras' frames), which would
-also mean a GPS with a PPS wire, not a USB dongle.
+- **The NMEA parser** --- about 60 lines, and the checksum.
+- **Receiver quirks.** Different receivers, baud rates, binary protocols:
+  gpsd copes; ours copes with the one dongle we have.
+- **Field diagnosis.** `cgps` on a phone's SSH session shows *why* there is
+  no fix --- three satellites, all weak --- better than our status line.
+
+What it would not:
+
+- We still need our program. gpsd does not set the clock, does not measure
+  the clock's error before correcting it, does not write `gps.json` or the
+  per-boot log, and has no idea about boots or attachments. That is most
+  of `wildlife_gps.py`, and it all stays.
+- The trust test stays too. gpsd's `mode: 3` ("3D fix") replaces our
+  `A`-and-four-satellites check, but the five-agreeing-seconds rule and
+  the floor-date check are ours either way.
+
+What it would add: a package on every image, its configuration
+(`/etc/default/gpsd`: which device, start on hotplug, `-n` to poll before
+any client connects), a daemon in memory while the dongle is in, the
+Python client library or a socket and JSON reader, and two programs
+starting on plug-in in the right order instead of one.
+
+So gpsd swaps 60 lines of parser we control for a daemon, a config file
+and a client, while the bulk of the work is unchanged. For one known
+receiver speaking plain NMEA, reading the port directly is less
+machinery. It is also the better lesson: `cat /dev/gps0` and reading the
+sentences is the most explainable part of the project, and gpsd puts a
+layer between a Scout and that.
+
+The design keeps the door open. `wildlife_gps.py` gets its fixes from one
+function, `read_fixes(device)`, that yields `(utc, lat, lon, alt, hdop,
+satellites, valid)`. If we later want gpsd --- a different receiver, a
+GPS left on permanently --- only that function changes, to read gpsd's JSON
+instead of the port.
 
 ### When there is a network time server as well
 
@@ -360,13 +379,15 @@ two:
 2. **udev** gets an event for that new device and runs through its rules.
    Ours matches the receiver by its USB vendor and product id, adds a
    stable name, `/dev/gps0`, so the program never has to guess whether it
-   is `ttyACM0` or `ttyACM1`, and tags the device for systemd with a
+   is `ttyACM0` or `ttyACM1`, marks it as not a modem so `ModemManager`
+   (if present) never probes it, and tags the device for systemd with a
    request to start our service:
 
    ```
    # /etc/udev/rules.d/90-wildlife-gps.rules
    SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a7", \
-       SYMLINK+="gps0", TAG+="systemd", ENV{SYSTEMD_WANTS}="wildlife-gps.service"
+       SYMLINK+="gps0", ENV{ID_MM_DEVICE_IGNORE}="1", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="wildlife-gps.service"
    ```
 
 3. **systemd** sees the tagged device as a unit of its own,
@@ -605,7 +626,7 @@ step 8 and step 9, and **step 8 and step 9 stay as they are**, the way every
 earlier step has: a finished lesson. That is the project's rule --- each
 step small enough to see what changed --- and here what changed is exactly
 the diff from step 8 to `step10_ai_camera.py` and from step 9 to
-`step10_camera_module.py`: about 120 lines, all of them GPS (plus step 8's
+`step10_camera_module.py`: about 115 lines, all of them GPS (plus step 8's
 clock fix). A Scout can read that diff as the lesson. From now on, tuning
 and fixes to the camera rules go into the step 10 files.
 
@@ -614,7 +635,7 @@ wrote a photograph by the `code` fingerprint in its sidecar, not by file
 name. A step 10 sidecar gets a new fingerprint like any other code change,
 so `ai/trailcam` treats it as a new run with nothing to change.
 
-What the 120 lines are, roughly the same in each camera program, because
+What those lines are, roughly the same in each camera program, because
 each is written to be read on its own:
 
 | Piece | Lines |
@@ -624,8 +645,7 @@ each is written to be read on its own:
 | The `gps` and `clock` blocks in the sidecar | ~15 |
 | Building the EXIF (degrees to rationals, the tags) | ~40 |
 | Encode to memory, insert EXIF, write once | ~15 |
-| The `/etc/wildlifecam/gps` off switch | ~5 |
-| **Total** | **~120** |
+| **Total** | **~115** |
 
 Plus, in `step10_ai_camera.py`, a dozen lines of step 8's `time.time()`
 moved to `time.monotonic()`.
@@ -745,8 +765,8 @@ Following on, not part of the first change:
 
 ## Privacy
 
-This is the part that has to be right before the first card with a fix on
-it comes home.
+Whether to remove locations from anything published is a decision for
+later, not part of this design. The facts that decision will need:
 
 - **The back garden is somebody's home.** Several cameras belong to other
   Scouts' families. A JPEG with GPS tags from a back garden is that family's
@@ -757,22 +777,19 @@ it comes home.
 - **The gallery is public.** `www.stokely.org/trailcam/` publishes
   shortlisted photographs.
 
-So:
+The options, none of which the camera side depends on:
 
-1. **The publish step strips GPS.** `publish-shortlist.sh` and the gallery
-   build remove all GPS EXIF from every published image (and drop `gps`
-   from any published JSON). Not rounded --- removed. The per-site page
-   says where it is in words, which is all a reader needs. This must land
-   before, or with, the first camera change.
-2. **No coordinates in the public repo.** No `gps.json`, no GPS logs,
-   no sidecars with fixes, no `sites.csv` centres for anywhere that is a
-   home. Park sites are public places and can live in the repo; home sites'
-   coordinates belong in the private repo with the camera owners table.
-3. **A per-camera off switch.** `/etc/wildlifecam/gps` containing `off`
-   makes the camera programs use GPS for the clock only and write no
-   position into sidecars or EXIF. Families who would rather not have a
-   location recorded at home get that by default; the campout cameras turn
-   it on.
+- **Remove GPS when publishing.** `publish-shortlist.sh` and the gallery
+  build strip GPS EXIF and the `gps` block from published files, all of
+  them or only for home sites.
+- **Round it** to a kilometre or so instead of removing it.
+- **A per-camera switch.** `/etc/wildlifecam/gps` containing `off` makes
+  the camera programs use GPS for the clock only and write no position.
+  About five lines in each camera program; easy to add later if wanted.
+
+Whatever is decided, coordinates for homes stay out of the public repo,
+with the camera owners table in the private one, as that data already
+does.
 
 ## For Nolan
 
@@ -826,27 +843,24 @@ and there is nothing hidden.
 ## Order of work
 
 1. Copy step 8 to `step10_ai_camera.py` and step 9 to
-   `step10_camera_module.py`, unchanged, and point `final_motion_capture.py` at them. A commit of its
-   own, so that every later diff against step 8 and step 9 is only the new
-   lesson. Then move `step10_ai_camera.py`'s intervals onto
-   `time.monotonic()`, which makes clock jumps safe whatever sets the
-   clock.
-2. GPS stripping in the publish path, and the `/etc/wildlifecam/gps` switch.
-   Nothing on a camera writes a location until these exist.
-3. `wildlife_gps.py`, the udev rule and the service: the trusted-fix
+   `step10_camera_module.py`, unchanged, and point
+   `final_motion_capture.py` at them. A commit of its own, so that every
+   later diff against step 8 and step 9 is only the new lesson. Then move
+   `step10_ai_camera.py`'s intervals onto `time.monotonic()`, which makes
+   clock jumps safe whatever sets the clock.
+2. `wildlife_gps.py`, the udev rule and the service: the trusted-fix
    test, measure-then-set, `gps.json`, the log and the status line. Useful
    on its own --- it fixes the clock problem and starts collecting drift
    measurements --- before any photograph carries a position.
-4. `where_and_when()`, the sidecar blocks and EXIF in `step10_camera_module.py`,
-   then `step10_ai_camera.py`.
-5. The image: `python3-piexif` installed, `ModemManager` and `gpsd` absent,
-   `/var/lib/wildlifecam` created, rule and service in place; the clone
-   instructions updated to match.
-6. The README: a step 10 section for the camera programs and a section
-   on the GPS service. And the deployment checklist: plug the dongle in at the start, at every
-   battery swap, and at the end before switching off; wait for the status
-   line to say the fix is taken.
-7. Laptop: `scan` reads the new blocks and logs, corrects times with the
+3. `where_and_when()`, the sidecar blocks and EXIF in
+   `step10_camera_module.py`, then `step10_ai_camera.py`.
+4. The image: `python3-piexif` installed, `/var/lib/wildlifecam` created,
+   rule and service in place; the clone instructions updated to match.
+5. The README: a step 10 section for the camera programs and a section on
+   the GPS service. And the deployment checklist: plug the dongle in at
+   the start, at every battery swap, and at the end before switching off;
+   wait for the status line to say the fix is taken.
+6. Laptop: `scan` reads the new blocks and logs, corrects times with the
    drift fit, keeps the per-camera drift table, and assigns sites by
    distance.
 
@@ -857,7 +871,7 @@ and there is nothing hidden.
   minutes, setup of eight cameras wants two.
 - **Precision on the card.** Five decimal places is about a metre, which is
   more than the receiver can honestly give and is fine for the private
-  archive given that the public copy is stripped. Rounding on the card is
-  a cheap extra if families want it.
+  private archive. What reaches the public copy is the publishing
+  decision under "Privacy".
 - **Altitude:** recorded, but GPS altitude is noticeably worse than
   horizontal position. Worth keeping only if someone wants it.
