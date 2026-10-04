@@ -27,8 +27,31 @@ PHOTO_ROOT = Path(os.environ.get("WILDLIFE_PHOTOS",
 # directory costs a rerun and never a photograph.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-MANIFEST = DATA_DIR / "manifest.sqlite"
+# TRAILCAM_MANIFEST points a command at another database -- a copy, when
+# trying a migration or a load before trusting it on the real one.
+MANIFEST = Path(os.environ.get("TRAILCAM_MANIFEST",
+                               DATA_DIR / "manifest.sqlite"))
 CROP_DIR = DATA_DIR / "crops"
+
+# Where cameras have been and what was put where: two hand-kept CSVs at
+# the top of ai/, next to the design documents, because they are facts a
+# person records and the code only reads (sites-design.md).  `trailcam
+# deployments load` copies them into the manifest.
+SITES_CSV = Path(__file__).resolve().parent.parent / "sites.csv"
+DEPLOYMENTS_CSV = Path(__file__).resolve().parent.parent / "deployments.csv"
+
+# The curation review pages and the rendered photographs that go up to
+# iNaturalist.  Both are derived from the manifest and the photo library,
+# so they live under DATA_DIR with everything else that can be rebuilt.
+CURATE_DIR = DATA_DIR / "curate"
+PUBLISH_DIR = DATA_DIR / "publish"
+
+# `deployments load` checks each boot's clock_first in deployments.csv
+# against the frames: the first frame's clock minus its uptime is when the
+# camera booted.  step8 takes about forty seconds to start recording after
+# boot, so the two legitimately differ by that much; a minute apart means
+# the row describes a different boot, or the wrong card was read.
+DEPLOYMENT_CLOCK_TOLERANCE_S = 60.0
 
 # Downloaded model weights (~280 MB for MDv5a).  Gitignored.
 MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
@@ -241,3 +264,51 @@ def ensure_directories():
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     if WRITE_CROPS:
         CROP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ------------------------------------------------------------
+# Publishing  (the plan of 3 October 2026: iNaturalist first)
+# ------------------------------------------------------------
+#
+# Nothing here uploads on its own.  iNaturalist's machine-generated
+# content policy allows "a script to create observations from a manually
+# curated local folder" and forbids a camera posting with no person in
+# the loop, so every observation that leaves this machine was approved by
+# a named person first, and the commands are run by hand.
+
+# The one place a site's true coordinates may live.  The repository is
+# public, so the backyard's latitude and longitude are not in sites.csv;
+# they are read from this gitignored overlay (ai/data/ is ignored as a
+# whole).  Columns: slug, latitude, longitude, uncertainty_m.
+SITES_PRIVATE_CSV = DATA_DIR / "sites.private.csv"
+
+# Murray's account.  The numeric id rather than the login, because logins
+# can be renamed and the id cannot.
+INAT_USER_ID = 10705076
+
+# The two observation fields every upload carries.  "Camera" (230) is the
+# equipment, as the rest of iNaturalist uses it ("Canon EOS Rebel T3");
+# "Trap ID" (2943) is the station, our hostname.  Putting the hostname in
+# "Camera" was the mistake of 1 October, since corrected by hand.
+INAT_FIELD_CAMERA = 230
+INAT_FIELD_TRAP_ID = 2943
+
+# "Camera Traps (Trail-cams)", a traditional project with 68,000
+# observations and no required fields.  Joining puts the pictures in front
+# of the people who identify camera-trap photographs.  None to skip.
+INAT_PROJECT_ID = 14933
+
+INAT_TAGS = ("trail camera", "camera trap", "Los Altos Pack 33")
+
+# Observations whose true position is within this distance of a site
+# marked `obscured` are treated as that site's, for the geoprivacy check
+# that runs before the deployments table exists.  The garden cameras are
+# all within 60 m of each other; 1 km is a wide margin and still a mile
+# short of Grant Park.
+OBSCURE_RADIUS_M = 1000.0
+
+# How many observations one `publish inaturalist upload` sends.  The API
+# allows 60 requests a minute and 10,000 a day; an observation is three to
+# six requests.  Small batches so each one is looked at on the site before
+# the next.
+INAT_MAX_PER_RUN = 25

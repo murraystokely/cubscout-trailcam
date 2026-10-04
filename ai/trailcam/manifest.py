@@ -41,7 +41,7 @@ import subprocess
 from . import config
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 SCHEMA = """
@@ -72,11 +72,28 @@ CREATE TABLE IF NOT EXISTS frames (
     -- exactly the frames that passed the rules under test.  Every
     -- evaluation query filters on this column, and only the gallery reads
     -- both.
-    kind        TEXT NOT NULL DEFAULT 'training'
+    kind        TEXT NOT NULL DEFAULT 'training',
+
+    -- A Pi Zero has no battery-backed clock, so `captured_at` is the
+    -- camera's opinion.  `boot` is a random id per power-up and `uptime_s`
+    -- the seconds since it; within one boot they order frames truthfully
+    -- whatever the clock said (sites-design.md).  Both come from the
+    -- sidecar or the per-boot measurements CSV; the cameras from before
+    -- the campout wrote neither, so both may be NULL.
+    boot        TEXT,
+    uptime_s    REAL,
+
+    -- Which deployment -- camera, site, stretch of time -- took the
+    -- frame.  Stamped by `trailcam deployments load`, not by `scan`, so
+    -- editing deployments.csv and re-stamping is one command and the
+    -- scan stays a description of the files.
+    deployment_id INTEGER REFERENCES deployments(id)
 );
 
 CREATE INDEX IF NOT EXISTS frames_where ON frames(camera, day);
 CREATE INDEX IF NOT EXISTS frames_kind ON frames(kind);
+CREATE INDEX IF NOT EXISTS frames_boot ON frames(camera, boot);
+CREATE INDEX IF NOT EXISTS frames_deployment ON frames(deployment_id);
 
 -- One row per thing-that-looked-at-frames.  Three kinds so far:
 --
@@ -250,6 +267,165 @@ LEFT JOIN frame_results camera_result
       AND camera_result.run_id IN (SELECT id FROM runs WHERE kind = 'camera')
 LEFT JOIN runs camera_run         ON camera_run.id = camera_result.run_id
 LEFT JOIN latest_annotation human ON human.frame_id = f.id;
+
+
+-- ------------------------------------------------------------
+-- Places, and what was published from them  (version 5)
+-- ------------------------------------------------------------
+--
+-- A frame knows which camera took it and what that camera's clock said.
+-- It does not know where the camera was, and at the Grant Park campout
+-- the clock was wrong by hours.  Both facts belong to the deployment:
+-- one camera, at one site, for one stretch of time.  `sites.csv` and
+-- `deployments.csv` in the repository are the source; `trailcam
+-- deployments load` copies them here and stamps frames.deployment_id.
+
+-- Where cameras get put.  Coordinates are blank in the repository for the
+-- back garden, whose geoprivacy is 'obscured'; the gitignored overlay
+-- config.SITES_PRIVATE_CSV fills them at load time, so the true position
+-- of the house is in this database on this machine and nowhere in git.
+CREATE TABLE IF NOT EXISTS sites (
+    slug          TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    aliases       TEXT,                 -- 'home;backyard': other slugs in use
+    latitude      REAL,
+    longitude     REAL,
+    uncertainty_m REAL,
+    geoprivacy    TEXT NOT NULL DEFAULT 'open'      -- open | obscured
+);
+
+-- One camera at one site for one stretch.  Keyed by `boot` where the
+-- camera wrote one, because a date range on a clock that may be a week
+-- stale would file a campout under the back garden.  The cameras from
+-- before the campout wrote no boot, so a deployment may instead give a
+-- range on the camera's clock; the CHECK insists on one or the other.
+--
+-- `clock_offset_s` is the one place the clock correction lives: a person
+-- writes `true_start` for a boot whose clock was wrong, the loader
+-- derives the offset from the first frame's uptime, and the `frame_times`
+-- view below adds it.  Within a boot the clock advances with uptime, so
+-- captured_at + offset is exact for every frame of the boot.
+CREATE TABLE IF NOT EXISTS deployments (
+    id                 INTEGER PRIMARY KEY,
+    camera             TEXT NOT NULL,
+    site               TEXT NOT NULL REFERENCES sites(slug),
+    boot               TEXT,                   -- NULL for a date-range row
+    range_start        TEXT,                   -- camera-clock bounds, used
+    range_end          TEXT,                   --   only when boot IS NULL
+    clock_first        TEXT,                   -- as in deployments.csv
+    clock_last         TEXT,
+    true_start         TEXT,                   -- when a person says the boot
+                                               --   really began; NULL = the
+                                               --   clock was right
+    clock_offset_s     REAL,                   -- derived at load
+    time_uncertainty_s REAL NOT NULL DEFAULT 0,
+    camera_model       TEXT NOT NULL,
+    rotation           INTEGER NOT NULL DEFAULT 0,   -- 180: mounted upside down
+    baited             INTEGER NOT NULL DEFAULT 0,   -- the cereal days
+    latitude           REAL,                   -- override the site's if set
+    longitude          REAL,
+    uncertainty_m      REAL,
+    code               TEXT,
+    photos             INTEGER,
+    evidence           TEXT,
+    UNIQUE (camera, boot),
+    CHECK (boot IS NOT NULL
+           OR (range_start IS NOT NULL AND range_end IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS deployments_camera ON deployments(camera);
+
+-- iNaturalist's taxon ids, cached so a name is looked up once.
+CREATE TABLE IF NOT EXISTS taxa (
+    id              INTEGER PRIMARY KEY,       -- the iNaturalist taxon id
+    name            TEXT NOT NULL,
+    scientific_name TEXT,
+    rank            TEXT,
+    fetched_at      TEXT
+);
+
+-- One animal, one encounter, chosen by a person: the unit iNaturalist and
+-- Camtrap DP both publish.  Not `annotations`, which is per frame and
+-- speaks the detector's vocabulary.  `curated_by` is the human decision
+-- iNaturalist's machine-generated content policy requires; nothing is
+-- uploaded while it is NULL.
+CREATE TABLE IF NOT EXISTS observations (
+    id            INTEGER PRIMARY KEY,
+    deployment_id INTEGER NOT NULL REFERENCES deployments(id),
+    taxon_id      INTEGER REFERENCES taxa(id),
+    taxon_guess   TEXT,
+    sureness      TEXT,                        -- sure | probable | unsure
+    count         INTEGER NOT NULL DEFAULT 1,
+    notes         TEXT,
+    status        TEXT NOT NULL DEFAULT 'candidate',
+                                               -- candidate | approved | rejected
+    source        TEXT NOT NULL,               -- propose | backfill | manual
+    created_at    TEXT NOT NULL,
+    curated_by    TEXT,
+    curated_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS observations_deployment
+    ON observations(deployment_id, status);
+
+-- The frames an observation is made of, in upload order; position 1 is
+-- the thumbnail.  `detection_id` is the box to crop; NULL means the full
+-- frame only.
+CREATE TABLE IF NOT EXISTS observation_frames (
+    observation_id INTEGER NOT NULL
+                   REFERENCES observations(id) ON DELETE CASCADE,
+    frame_id       INTEGER NOT NULL REFERENCES frames(id),
+    position       INTEGER NOT NULL,
+    detection_id   INTEGER REFERENCES detections(id),
+    PRIMARY KEY (observation_id, frame_id)
+);
+
+-- Where an observation went.  One row per destination, so "is this on
+-- iNaturalist yet" is a lookup and a crash between create and upload
+-- leaves a `created` row to finish rather than a duplicate to find.
+CREATE TABLE IF NOT EXISTS publications (
+    id              INTEGER PRIMARY KEY,
+    observation_id  INTEGER NOT NULL REFERENCES observations(id),
+    destination     TEXT NOT NULL,     -- inaturalist | zenodo | gbif | ...
+    remote_id       TEXT NOT NULL,
+    remote_url      TEXT,
+    state           TEXT NOT NULL,     -- created | complete
+    photos_uploaded INTEGER NOT NULL DEFAULT 0,
+    published_at    TEXT,
+    last_synced_at  TEXT,
+    remote_state    TEXT,              -- JSON: quality grade, community taxon
+    UNIQUE (observation_id, destination)
+);
+
+-- Every frame with its true time.  The clock correction is applied here
+-- and nowhere else, so the uploader, the exporters and the gallery cannot
+-- disagree about when a deer went past.  Where the deployment has no
+-- offset the camera's own time is passed through untouched.
+CREATE VIEW IF NOT EXISTS frame_times AS
+SELECT f.id AS frame_id, f.camera, f.path, f.kind, f.boot, f.uptime_s,
+       f.captured_at,
+       d.id AS deployment_id, d.site, d.rotation, d.baited,
+       CASE WHEN d.clock_offset_s IS NULL THEN f.captured_at
+            ELSE strftime('%Y-%m-%dT%H:%M:%f',
+                          julianday(f.captured_at)
+                          + d.clock_offset_s / 86400.0)
+       END AS true_at,
+       COALESCE(d.time_uncertainty_s, 0) AS time_uncertainty_s
+  FROM frames f
+  LEFT JOIN deployments d ON d.id = f.deployment_id;
+
+-- When each observation happened: the span of its frames' true times.
+CREATE VIEW IF NOT EXISTS observation_events AS
+SELECT o.id AS observation_id,
+       MIN(t.true_at) AS event_start,
+       MAX(t.true_at) AS event_end,
+       MAX(t.time_uncertainty_s) AS time_uncertainty_s,
+       COUNT(*) AS frames
+  FROM observations o
+  JOIN observation_frames link ON link.observation_id = o.id
+  JOIN frame_times t ON t.frame_id = link.frame_id
+ GROUP BY o.id;
 """
 
 
@@ -295,6 +471,11 @@ def refresh_verdicts(database):
     """
     database.execute("DROP VIEW IF EXISTS verdicts")
     database.execute("DROP VIEW IF EXISTS latest_annotation")
+    # The time views carry no config numbers, but they are rebuilt here
+    # too so that a column added to `frame_times` reaches an existing
+    # database the same way a changed threshold does.
+    database.execute("DROP VIEW IF EXISTS observation_events")
+    database.execute("DROP VIEW IF EXISTS frame_times")
     database.executescript(_formatted_schema())
     database.commit()
 
@@ -352,6 +533,64 @@ def _migrate_kind(database):
     database.commit()
 
 
+def _migrate_place(database):
+    """Version 4 knew which camera took a frame and what its clock said,
+    but not where it was or which power-up it belonged to.
+
+    The boot id and uptime were already in the archive, kept in the camera
+    run's `metrics` JSON "until frames grows columns for them".  Now it
+    has, and one UPDATE copies them across; the deployment column stays
+    NULL until `trailcam deployments load` stamps it.  The cameras from
+    before the campout wrote no boot, so most rows stay NULL, and that is
+    the truth about them.
+    """
+    columns = {row[1] for row in database.execute("PRAGMA table_info(frames)")}
+    if "deployment_id" in columns:
+        return
+
+    print("Adding frames.boot, uptime_s and deployment_id...")
+    database.execute("DROP VIEW IF EXISTS observation_events")
+    database.execute("DROP VIEW IF EXISTS frame_times")
+    if "boot" not in columns:
+        database.execute("ALTER TABLE frames ADD COLUMN boot TEXT")
+    if "uptime_s" not in columns:
+        database.execute("ALTER TABLE frames ADD COLUMN uptime_s REAL")
+    database.execute("ALTER TABLE frames ADD COLUMN deployment_id INTEGER "
+                     "REFERENCES deployments(id)")
+    database.execute(
+        "CREATE INDEX IF NOT EXISTS frames_boot ON frames(camera, boot)")
+    database.execute(
+        "CREATE INDEX IF NOT EXISTS frames_deployment "
+        "ON frames(deployment_id)")
+
+    # A frame has one camera run -- the deployment of step8 that recorded
+    # it -- so the subqueries find at most one boot per frame.
+    cursor = database.execute("""
+        UPDATE frames SET
+            boot = (SELECT json_extract(fr.metrics, '$.boot')
+                      FROM frame_results fr JOIN runs r ON r.id = fr.run_id
+                     WHERE fr.frame_id = frames.id AND r.kind = 'camera'
+                       AND json_extract(fr.metrics, '$.boot') IS NOT NULL
+                     LIMIT 1),
+            uptime_s = (SELECT json_extract(fr.metrics, '$.uptime_s')
+                          FROM frame_results fr JOIN runs r ON r.id = fr.run_id
+                         WHERE fr.frame_id = frames.id AND r.kind = 'camera'
+                           AND json_extract(fr.metrics, '$.boot') IS NOT NULL
+                         LIMIT 1)
+         WHERE id IN (SELECT fr.frame_id
+                        FROM frame_results fr JOIN runs r ON r.id = fr.run_id
+                       WHERE r.kind = 'camera'
+                         AND json_extract(fr.metrics, '$.boot') IS NOT NULL)
+    """)
+    print(f"  {cursor.rowcount} frames given their boot and uptime from the "
+          f"camera's own record.")
+
+    database.execute("DELETE FROM schema_version")
+    database.execute("INSERT INTO schema_version VALUES (?)",
+                     (SCHEMA_VERSION,))
+    database.commit()
+
+
 def migrate(database):
     """Bring an older manifest up to the current shape.
 
@@ -367,6 +606,7 @@ def migrate(database):
         _migrate_names(database)
         if "frames" in tables:
             _migrate_kind(database)
+            _migrate_place(database)
         return                                  # new database, or already v2
 
     columns = {row[1] for row in database.execute("PRAGMA table_info(frames)")}
@@ -511,8 +751,9 @@ def migrate(database):
           "record which step8 made them.")
     print("  Run `scan` to rebuild them, one run per deployment.")
 
-    # And on from version 3 to 4, in the same breath.
+    # And on from version 3 to 4 to 5, in the same breath.
     _migrate_kind(database)
+    _migrate_place(database)
 
 
 # ------------------------------------------------------------
@@ -647,13 +888,40 @@ def add_frames(database, frames):
 
     database.executemany(
         """INSERT OR IGNORE INTO frames
-               (camera, day, path, captured_at, mean_luma, kind)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+               (camera, day, path, captured_at, mean_luma, kind,
+                boot, uptime_s)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         [(f.camera, f.day, f.relative_path, f.captured_at.isoformat(),
-          f.mean_luma, f.kind) for f in frames])
+          f.mean_luma, f.kind) + _boot_and_uptime(f) for f in frames])
+    added = database.total_changes - before
+
+    # Frames scanned before the columns existed get their boot now, and
+    # nothing else about them is touched.  Only rows still blank, so a
+    # rescan keeps the promise above: it never overwrites.
+    database.executemany(
+        "UPDATE frames SET boot = ?, uptime_s = ? "
+        " WHERE path = ? AND boot IS NULL",
+        [_boot_and_uptime(f) + (f.relative_path,) for f in frames
+         if _boot_and_uptime(f)[0] is not None])
     database.commit()
 
-    return database.total_changes - before
+    return added
+
+
+def _boot_and_uptime(frame):
+    """(boot, uptime_s) from a frame's metrics, or (None, None).
+
+    The CSV hands uptime over as text and the sidecar as a number; the
+    column is REAL either way.
+    """
+    metrics = frame.metrics or {}
+    boot = metrics.get("boot") or None
+    uptime = metrics.get("uptime_s")
+    try:
+        uptime = float(uptime) if uptime not in (None, "") else None
+    except (TypeError, ValueError):
+        uptime = None
+    return boot, uptime
 
 
 def record_camera_decisions(database, frames):
@@ -786,6 +1054,109 @@ def add_annotation(database, frame_id, label, who=None, notes=None):
         """INSERT INTO annotations (frame_id, label, who, labelled_at, notes)
            VALUES (?, ?, ?, datetime('now'), ?)""",
         (frame_id, label, who or os.environ.get("USER"), notes))
+    database.commit()
+
+
+# ------------------------------------------------------------
+# Observations and where they went
+# ------------------------------------------------------------
+
+OBSERVATION_STATUSES = ("candidate", "approved", "rejected")
+
+
+def add_observation(database, deployment_id, source, taxon_guess=None,
+                    notes=None):
+    """One candidate observation, with no frames yet.  Returns its id.
+
+    `source` says who proposed it: `propose` for the visit grouper,
+    `backfill` for one recovered from an upload made by hand, `manual`
+    for a person at the command line.
+    """
+    cursor = database.execute(
+        """INSERT INTO observations
+               (deployment_id, source, taxon_guess, notes, status,
+                created_at)
+           VALUES (?, ?, ?, ?, 'candidate', datetime('now'))""",
+        (deployment_id, source, taxon_guess, notes))
+    database.commit()
+    return cursor.lastrowid
+
+
+def set_observation_status(database, observation_id, status, who,
+                           notes=None):
+    """Approve or reject, recording who decided and when.
+
+    Refused once anything has been published from the observation: the
+    remote record would then disagree with this one, and the honest order
+    is to delete it there first.  Raises ValueError in both the bad-status
+    and the already-published case, so a caller can print it.
+    """
+    if status not in OBSERVATION_STATUSES:
+        raise ValueError(f"status must be one of {OBSERVATION_STATUSES}, "
+                         f"not {status!r}")
+
+    published = database.execute(
+        "SELECT destination, remote_id FROM publications "
+        " WHERE observation_id = ?", (observation_id,)).fetchall()
+    if published:
+        where = ", ".join(f"{p['destination']} {p['remote_id']}"
+                          for p in published)
+        raise ValueError(f"observation {observation_id} is already "
+                         f"published ({where}); delete it there first")
+
+    database.execute(
+        """UPDATE observations
+              SET status = ?, curated_by = ?, curated_at = datetime('now'),
+                  notes = COALESCE(?, notes)
+            WHERE id = ?""",
+        (status, who, notes, observation_id))
+    database.commit()
+
+
+def add_observation_frames(database, observation_id, frames):
+    """Attach frames: an iterable of (frame_id, position, detection_id).
+
+    Re-attaching a frame moves it to the new position rather than failing,
+    so trimming and reordering an observation is one call.
+    """
+    database.executemany(
+        """INSERT OR REPLACE INTO observation_frames
+               (observation_id, frame_id, position, detection_id)
+           VALUES (?, ?, ?, ?)""",
+        [(observation_id, frame_id, position, detection_id)
+         for frame_id, position, detection_id in frames])
+    database.commit()
+
+
+def add_publication(database, observation_id, destination, remote_id,
+                    remote_url=None, state="created", remote_state=None):
+    """Record that an observation now exists at a destination.
+
+    Written the moment the remote record is created, before any photo
+    goes up, so a crash in between leaves a `created` row to finish and
+    never a second copy.  One row per (observation, destination) is a
+    UNIQUE constraint, and a second insert raises sqlite3.IntegrityError
+    on purpose.
+    """
+    cursor = database.execute(
+        """INSERT INTO publications
+               (observation_id, destination, remote_id, remote_url, state,
+                published_at, remote_state)
+           VALUES (?, ?, ?, ?, ?, datetime('now'), ?)""",
+        (observation_id, destination, str(remote_id), remote_url, state,
+         json.dumps(remote_state, sort_keys=True) if remote_state else None))
+    database.commit()
+    return cursor.lastrowid
+
+
+def complete_publication(database, publication_id, photos_uploaded):
+    """Every photo is up: close the publication."""
+    database.execute(
+        """UPDATE publications
+              SET state = 'complete', photos_uploaded = ?,
+                  last_synced_at = datetime('now')
+            WHERE id = ?""",
+        (photos_uploaded, publication_id))
     database.commit()
 
 
