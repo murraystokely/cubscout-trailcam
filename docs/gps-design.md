@@ -235,7 +235,8 @@ would have trusted it at 1:25.
 
 Until the first trusted fix of an attachment, `wildlife_gps.py` writes
 **nothing**: no `gps.json`, no log row, no clock change. It prints a status
-line to the journal once a minute (`waiting: 3 satellites, no fix yet`) so
+line to the journal once a minute (`waiting: 9 satellites in view, 0 in
+use, no fix yet`) so
 that `journalctl -u wildlife-gps` says what it is waiting for. If the fix is
 lost mid-attachment (someone's hand over the dongle, the tree canopy), it
 stops writing and waits for another 10 seconds in a row before it starts.
@@ -307,7 +308,8 @@ What it holds:
     "hdop": 1.2,
     "satellites": 7,
     "samples": 180,
-    "spread_m": 3.1
+    "spread_m": 3.1,
+    "attachment": 1
   },
 
   "clock": {
@@ -329,11 +331,12 @@ What it holds:
   into every sidecar, from `/proc/sys/kernel/random/boot_id`.
 - **`position` is a median, not the latest reading.** A trail camera does
   not move, and single GPS readings wander by several metres. It is the
-  median of every trusted fix this boot, across attachments, and
-  `spread_m` says how much they disagreed. If a later attachment's fixes
-  sit more than about 50 m from the earlier ones, the camera has been
-  moved without being switched off: keep the first attachment's position,
-  and say so in the journal and the log.
+  median of the trusted fixes of the **first attachment** in this boot
+  that found one, and `spread_m` says how much they disagreed. A later
+  attachment (takedown) does not change it; it only checks that its own
+  fixes are within about 50 m, and says in the journal if they are not,
+  because then the camera was moved without being switched off. Every
+  fix from every attachment is in the log either way.
 - **`attachments`** has one entry per time the dongle was plugged in and
   reached a trusted fix, appended, never replaced. `offset_s` is how wrong
   the Pi's clock was at that attachment's first trusted fix, measured
@@ -384,9 +387,10 @@ If `/run/systemd/timesync/synchronized` exists, a network time server is
 already in charge: measure and log, but skip step 2. See "When there is a
 network time server as well".
 
-**Privilege.** Setting the clock needs `CAP_SYS_TIME`. Run the service as
-the `webelos` user with `AmbientCapabilities=CAP_SYS_TIME` rather than as
-root.
+**Privilege.** Setting the clock needs `CAP_SYS_TIME`, and touching
+`timesync/clock`, which belongs to the `systemd-timesync` user, needs
+`CAP_FOWNER`. Run the service as the `webelos` user with
+`AmbientCapabilities=CAP_SYS_TIME CAP_FOWNER` rather than as root.
 
 **What the camera programs feel.** The clock jumps while they run: forward
 by hours or days at the first attachment, by seconds in either direction
@@ -415,10 +419,10 @@ two:
    request to start our service:
 
    ```
-   # /etc/udev/rules.d/90-wildlife-gps.rules
+   # config/90-wildlife-gps.rules -> /etc/udev/rules.d/
    SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a7", \
        SYMLINK+="gps0", ENV{ID_MM_DEVICE_IGNORE}="1", \
-    TAG+="systemd", ENV{SYSTEMD_WANTS}="wildlife-gps.service"
+       TAG+="systemd", ENV{SYSTEMD_WANTS}="wildlife-gps.service"
    ```
 
 3. **systemd** sees the tagged device as a unit of its own,
@@ -427,7 +431,7 @@ two:
 4. **The service** runs the program, and is bound to the device:
 
    ```ini
-   # /etc/systemd/system/wildlife-gps.service
+   # config/wildlife-gps.service -> /etc/systemd/system/
    [Unit]
    Description=Wildlife camera GPS (clock and location)
    BindsTo=dev-gps0.device
@@ -435,7 +439,7 @@ two:
 
    [Service]
    User=webelos
-   AmbientCapabilities=CAP_SYS_TIME
+   AmbientCapabilities=CAP_SYS_TIME CAP_FOWNER
    ExecStart=/usr/bin/python3 -u /home/webelos/wildlife_gps.py /dev/gps0
    Restart=on-failure
    ```
@@ -460,8 +464,9 @@ way the photo directory is.
 **Knowing it worked, in the field.** At the end of a deployment, the person
 collecting the camera needs to know the fix has been taken before they
 switch it off. `wildlife_gps.py` writes a one-line status, with no
-coordinates in it, to `/var/www/html/gps-status.txt` --- `waiting: 3
-satellites`, then `fix 16:02:11 UTC; clock was 48.3 s fast; corrected` ---
+coordinates in it, to `/var/www/html/gps-status.txt` --- `waiting: 9
+satellites in view, 0 in use`, then `fix 16:02:11 UTC with 7 satellites;
+clock was 48.3 s fast; corrected` ---
 which a phone on the camera's Wi-Fi can read. (Check whether the VK-162's
 LED changes when it has a fix; if it does, that is simpler still.)
 
@@ -684,7 +689,8 @@ moved to `time.monotonic()`.
 **`wildlife_gps.py`** is new and standalone: the NMEA parser (~60), the
 trust test (~15), measure-then-set (~30), `gps.json` with its median
 and attachments (~50), the log (~30), the status line, the main loop and
-explanations in the style of the step files --- 300 to 400 lines in all.
+explanations in the style of the step files. As written: about 340
+lines of code and 240 of explanation.
 
 ## The log
 

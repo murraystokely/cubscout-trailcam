@@ -1,0 +1,26 @@
+# Runs wildlife_gps.py for as long as the GPS dongle is plugged in.
+#
+# Install on a camera:
+#   sudo cp config/wildlife-gps.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Do NOT enable it.  Nothing starts it but the dongle: the udev rule in
+# config/90-wildlife-gps.rules asks for it when /dev/gps0 appears, and
+# BindsTo stops it when the dongle is pulled out.
+#
+# It runs as webelos, with two powers and no more:
+#   CAP_SYS_TIME  to set the clock;
+#   CAP_FOWNER    to touch /var/lib/systemd/timesync/clock, which belongs
+#                 to systemd-timesync, so the next boot starts from GPS
+#                 time instead of an old one.
+
+[Unit]
+Description=Wildlife camera GPS (clock and location)
+BindsTo=dev-gps0.device
+After=dev-gps0.device
+
+[Service]
+User=webelos
+AmbientCapabilities=CAP_SYS_TIME CAP_FOWNER
+ExecStart=/usr/bin/python3 -u /home/webelos/wildlife_gps.py /dev/gps0
+Restart=on-failure
