@@ -53,9 +53,10 @@ Things to know before plugging one in:
   on a cold start after travelling, it can be several minutes, and the
   dongle's antenna is small. The program has to be patient and say what it
   is waiting for.
-- **It costs battery.** Roughly a fifth of what a Zero 2 W draws. That is
-  why the design below works just as well if the dongle is plugged in at
-  deploy time, left until it has a fix, and then unplugged.
+- **It costs battery, and money.** Roughly a fifth of what a Zero 2 W
+  draws, and a dongle per camera adds up. So we do not leave one on each
+  camera: a dongle or two go round the cameras at setup and again at
+  takedown (decided 2026-10-04). Everything below is designed for that.
 - **No PPS over USB**, so the time is good to a few hundred milliseconds,
   not microseconds. That is a thousand times better than we have now and
   more than the photographs need.
@@ -94,39 +95,94 @@ keep working with no dongle, a broken dongle, or a dongle pulled out
 mid-run; a crash in GPS parsing can never cost a photograph. And
 `wildlife_gps.py` is small enough to be its own lesson.
 
-### Why not gpsd and chrony
+### How this relates to the usual tools: gpsd, chrony, timesyncd
 
-The textbook answer is `gpsd` reading the receiver and `chrony` disciplining
-the clock from it. It is better at sub-millisecond time, which we do not
-need, and it costs: chrony replaces `systemd-timesyncd` on eleven cards (and
-the `timesync/clock` floor the clone instructions rely on), gpsd is another
-daemon on a 512 MB Pi, and neither writes the one file the camera programs
-want. It is also a black box to a fourth grader, where `$GPRMC,...,A,...`
-followed by "the `A` means it knows where it is" is not. Revisit if we ever
-want time good to the millisecond across cameras, for example to match one
-animal across two cameras' frames.
+What a camera runs today, out of the box: **`systemd-timesyncd`**, Raspberry
+Pi OS's default. It is a simple network time client. With a network it asks
+a time server every half minute to half hour; if the clock is off by more
+than about 0.4 s it steps it, otherwise it nudges the clock's rate
+(slewing) until it agrees. Without a network it does nothing except restore
+the saved floor at boot. No `gpsd`, no `chrony`. (`timedatectl
+show-timesync` on a camera confirms which client is running; this should
+be checked on the image before building on it.)
 
-## Plugged in at the start, at the end, or both
+The textbook way to add GPS is two more daemons: **`gpsd`** owns the serial
+port and hands fixes to anything that asks, and **`chrony`** replaces
+timesyncd and treats GPS as one more time source alongside any network
+servers, choosing between them and disciplining the clock's rate. That is
+the right answer for a GPS that is always attached --- a stratum-1 time
+server in a closet, say --- and it is better than ours at sub-millisecond
+time.
 
-The dongle does not have to stay attached. The three ways it will actually
-be used:
+For a dongle that visits each camera for five minutes twice a deployment it
+buys little and costs a lot:
 
-- **At the start of a deployment.** Plug in at the post, wait for a fix,
-  unplug. The clock is right from then on, give or take drift, and every
-  photograph in that boot gets the position.
-- **At the end.** Plug in when collecting the camera, before shutting it
-  down or pulling the card. The clock has been wrong (or drifting) for the
-  whole run; this one fix says by exactly how much, at a known uptime.
-- **Both.** Two fixes in one boot, days or weeks apart. The first sets the
-  clock; the second measures how far it has drifted since. That is the
-  drift rate of this camera's crystal, and with it every photograph in
-  between can be corrected, assuming the drift is linear --- see
-  "Correcting the time".
+- chrony's strength is steering the clock continuously from many samples;
+  five minutes of NMEA (no PPS) at setup is a handful of noisy samples, and
+  it would need configuring to step the clock at any time (`makestep 1 -1`)
+  rather than slew a four-day error away over weeks.
+- It does not produce the one thing the takedown plug-in is for: a logged
+  measurement of how wrong the clock was, at a known uptime, before it was
+  corrected, in a file that travels with the photographs.
+- Neither daemon writes the `gps.json` the camera programs want, so we would
+  still write a program; it would just talk to gpsd instead of the port.
+- chrony replaces timesyncd on eleven cards, and the `timesync/clock` floor
+  the clone instructions rely on; gpsd is another resident daemon on a
+  512 MB Pi.
+- Both are black boxes to a fourth grader, where `$GPRMC,...,A,...` and
+  "the `A` means it knows where it is" is not.
+
+So we keep timesyncd for networks and add `wildlife_gps.py` for GPS.
+Revisit chrony if cameras ever need time good to the millisecond across
+each other (matching one animal across two cameras' frames), which would
+also mean a GPS with a PPS wire, not a USB dongle.
+
+### When there is a network time server as well
+
+Normally there is not: in the field, GPS is the only source. But a camera
+at home on Wi-Fi, or near a phone hotspot at camp, will reach a time server
+through timesyncd, and then there are two things that can set the clock.
+The rule is simple: **when the network has synchronised the clock,
+`wildlife_gps.py` measures and logs but does not set it.** It knows by the
+file `/run/systemd/timesync/synchronized`, which timesyncd creates when it
+first reaches a server and which disappears at reboot.
+
+The cases:
+
+| What happens | Result |
+|---|---|
+| Network at boot, GPS plugged in later | timesyncd has already set the clock. GPS measures an offset of a few tenths of a second, logs it with `network_synced=1`, does not step. |
+| GPS sets the clock, network appears later | timesyncd finds the clock within a second; nudges it, or steps it by a few tenths (the NMEA delay). Harmless. Photographs after that say `"network"`. |
+| Both, and they disagree by more than 2 s | One of them is wrong. GPS logs the disagreement and a journal warning, and leaves the clock to timesyncd: the network source is checked continuously and the dongle is about to leave. The log keeps both numbers for the laptop to judge. |
+| Network for a while, then gone | The clock keeps the rate timesyncd last set and drifts from there; nothing for GPS to do differently. |
+| A Pi 5 with a battery-backed real-time clock | It boots with roughly the right time. GPS still measures and corrects as usual; the setup offset is just small. |
+
+One consequence for drift correction: while timesyncd is adjusting the
+clock's rate it adjusts uptime's rate too (the kernel steers both
+together), so log rows marked `network_synced` are left out of the drift
+fit. That is no loss: photographs taken while the network was in charge
+already have the right time, and say so with `"network"`.
+
+## Plugged in at setup and at takedown
+
+We do not leave a dongle on each camera. One or two go round the cameras:
+
+- **At setup.** Plug in at the post, wait for the fix, unplug and move to
+  the next camera. The clock is right from then on, give or take drift,
+  and every photograph in that boot gets the position.
+- **At takedown.** Plug in when collecting the camera, before shutting it
+  down or pulling the card. This one fix says exactly how far the clock
+  has drifted, at a known uptime.
+
+Two fixes in one boot, days or weeks apart, give the drift rate of this
+camera's crystal, and with it every photograph in between can be
+corrected, assuming the drift is linear --- see "Correcting the time".
+Either one alone still helps: setup only gets the position and a clock
+that starts right; takedown only back-dates the whole boot.
 
 Each time the dongle is plugged in is an **attachment**, and every
-attachment leaves a record, whether or not it changes the clock. The design
-below is built so that the second attachment never overwrites what the
-first one learned.
+attachment leaves a record, whether or not it changes the clock. The second
+attachment never overwrites what the first one learned.
 
 ## Nothing is written until a fix is trusted
 
@@ -264,17 +320,18 @@ Measuring before correcting is what makes the end-of-deployment plug-in
 worth doing: the number that matters is how wrong the clock *had become*,
 and it is gone once the clock is fixed.
 
-While the dongle stays attached, it repeats the same measure-then-correct
-every ten minutes, with each one going into the log. A camera left with the
-dongle on all deployment therefore has a correct clock throughout and a
-drift measurement every ten minutes, at the price of battery.
+If the dongle is left on for a while --- someone gets distracted at the
+next camera --- it repeats the same measure-then-correct every ten minutes,
+with each one going into the log. That is a side effect, not a way we plan
+to run.
 
 NMEA sentences arrive a few hundred milliseconds after the instant they
 describe. That bias is the same at every attachment, so it cancels out of
 the drift rate, and it is well inside the one-second threshold.
 
-`systemd-timesyncd` stays installed. With a network it will agree with GPS
-to well inside a second; without one it does nothing. They do not fight.
+If `/run/systemd/timesync/synchronized` exists, a network time server is
+already in charge: measure and log, but skip step 2. See "When there is a
+network time server as well".
 
 **Privilege.** Setting the clock needs `CAP_SYS_TIME`. Run the service as
 the `webelos` user with `AmbientCapabilities=CAP_SYS_TIME` rather than as
@@ -357,29 +414,77 @@ LED changes when it has a fix; if it does, that is simpler still.)
 
 ## How step 8 and step 9 read it
 
-At every saved photograph --- not at every look --- each program calls one
+Each program keeps the last `gps.json` it read in memory, and at each saved
+photograph --- not at each look --- asks the filesystem one question: has
+the file been replaced since? Only if it has does it read it again. One
 function, written out in each file the way `boot_id()` and
 `seconds_since_boot()` already are, so either step still reads top to
 bottom on its own:
 
 ```python
+GPS_FILE = "/var/lib/wildlifecam/gps.json"
+gps_cache = {"stamp": None, "gps": None}
+
+
 def where_and_when():
-    """What the GPS program last wrote, and whether it is about this boot."""
+    """What the GPS program last wrote, and whether it is about this boot.
+
+    Kept in memory.  We only read the file again when it has been
+    replaced, which happens a few times a boot at most: at setup and at
+    takedown.
+    """
     try:
-        with open("/var/lib/wildlifecam/gps.json") as f:
-            gps = json.load(f)
-    except (OSError, ValueError):
+        info = os.stat(GPS_FILE)
+    except OSError:
         return None                      # no dongle has ever been plugged in
-    if "lat" not in gps.get("position", {}):
-        return None                      # not a fix we can use
-    gps["this_boot"] = gps.get("boot") == BOOT_ID
-    return gps
+    stamp = (info.st_ino, info.st_mtime_ns)
+    if stamp != gps_cache["stamp"]:
+        gps_cache["stamp"] = stamp
+        gps_cache["gps"] = None
+        try:
+            with open(GPS_FILE) as f:
+                gps = json.load(f)
+            if "lat" in gps.get("position", {}):     # not a fix we can use
+                gps["this_boot"] = gps.get("boot") == BOOT_ID
+                gps_cache["gps"] = gps
+        except (OSError, ValueError):
+            pass
+    return gps_cache["gps"]
 ```
 
-Reading a few hundred bytes per saved photograph costs nothing next to
-writing the photograph. Reading at every save rather than once at startup
-is what lets a fix that arrives ten minutes into the run reach every
-photograph after it.
+The test is "has it **changed**", not "is it **newer**": the file's
+modification time comes from the clock GPS is busy correcting, so it can
+go backwards. `wildlife_gps.py` replaces the file with `os.replace()`, which
+gives it a new inode every time, so the inode alone would do; the
+modification time is there in case it ever does not.
+
+### Why not check once an hour
+
+Caching is right, and the version above is the cache; the question is only
+how often to ask whether it is stale. Once an hour loses the photographs that matter most:
+
+- **At setup** the camera program starts at boot and the fix arrives a few
+  minutes later. An hourly check leaves the first hour of photographs ---
+  the camera's first look at its new site, and anyone setting it up ---
+  without a position, though the camera knew it.
+- **At takedown** the camera may be switched off ten minutes after the
+  dongle goes in. An hourly check would usually never see the takedown fix
+  at all. (The log has it either way, so the laptop's time correction is
+  unaffected, but the sidecars would say `"saved"` for photographs taken
+  after the clock was set right.)
+
+And the hourly check would save almost nothing. A `stat` is one system
+call: microseconds, no reading of the SD card (the directory entry is in
+the kernel's cache after the first time), no memory beyond a few numbers.
+It happens at most once per *saved* photograph, which step 8 and step 9
+limit to 720 and 1,440 an hour, against a JPEG encode and a 1--3 MB write
+taking a large fraction of a second each. Even the uncached version ---
+open and parse a 1 KB file each save --- would be well under a
+millisecond on a Zero 2 W, from the page cache, never touching the card.
+The memory is the parsed file, a few kilobytes, whichever way it is done.
+
+So: cached, because this is a small Pi, and checked with a `stat` at each
+save, because the check is too cheap to ration.
 
 ### "Newer than the current boot" means the same boot id, not a later time
 
@@ -469,6 +574,61 @@ once. If building the EXIF fails for any reason, write the photograph
 without it: as with the sidecar, metadata is never worth losing a
 photograph over.
 
+## How much code, and what the files are called
+
+**In step 8 and step 9**, roughly the same in each, because each is written
+to be read on its own and they already repeat `boot_id()` and friends:
+
+| Piece | Lines |
+|---|---|
+| `where_and_when()` with its cache | ~30 |
+| Which clock to believe (`gps` / `network` / `saved`) | ~15 |
+| The `gps` and `clock` blocks in the sidecar | ~15 |
+| Building the EXIF (degrees to rationals, the tags) | ~40 |
+| Encode to memory, insert EXIF, write once | ~15 |
+| The `/etc/wildlifecam/gps` off switch | ~5 |
+| **Total** | **~120** |
+
+About 7% more for step 8 (1,687 lines today) and 20% for step 9 (633).
+Step 8 also gets its `time.time()` intervals moved to `time.monotonic()`,
+a change of a dozen lines that does not add any.
+
+**`wildlife_gps.py`** is new and standalone: the NMEA parser (~60), the
+trusted-fix test (~40), measure-then-set (~30), `gps.json` with its median
+and attachments (~50), the log (~30), the status line, the main loop and
+explanations in the style of the step files --- 300 to 400 lines in all.
+
+**Is it a step 10?** As a lesson, yes: it introduces new ideas (serial
+devices, NMEA, checksums, setting the clock, programs started by plugging
+something in) and the README should teach it as one. As a file, no. The
+numbered steps are the camera programs, each a successor to the last, and
+the launcher runs step 8 or 9; this is not their successor but a second
+program that runs beside them. Calling it `step10_gps.py` would suggest
+it replaces step 9. Keep the name `wildlife_gps.py` (like
+`final_motion_capture.py`, it says what it is for) and give it a README
+section, "Step 10 --- Where and when am I?", that links to it.
+
+**Renaming step 8 and 9 to `step10_aicamera.py` and `step10_picam3.py`:**
+not now, and not with this work. The hardware in the name is a good idea
+in itself --- step 8 versus step 9 says nothing about which camera
+each is for. But the rename is all cost at the moment:
+
+- `final_motion_capture.py` launches them by name, so every card needs the
+  launcher and both renamed files updated together, or the camera falls
+  back to the wrong program or does not start.
+- Eleven cards in the field, other families' among them, each needing a
+  visit.
+- The README, the cheatsheet, `ai/README.md`, the results write-ups and
+  `ai/trailcam` all say "step 8"; the `runs` table is keyed by step 8
+  version.
+- `picam3` is not quite right either: step 9 is for any ordinary Camera
+  Module, not only the v3.
+
+GPS slots into both files as they are, the way the millisecond names and
+the hourly ceilings did. If the rename is wanted, it is its own change,
+made at a time when every card is in hand anyway --- the start of a
+season, say --- and with nothing else in it.
+
 ## The log
 
 The sidecars only exist where there are photographs, and the
@@ -508,7 +668,7 @@ gps_utc,pi_utc,uptime_s,offset_s,stepped_s,attachment,lat,lon,alt_m,hdop,satelli
   meaning a time server may also have adjusted the clock; the laptop
   leaves those rows out of the drift fit.
 - Each row is flushed to the card as it is written. The file is small even
-  with the dongle on all month: one row a minute is about 4 MB.
+  with an attachment of a few minutes it is a handful of rows.
 
 ## Correcting the time
 
@@ -535,7 +695,6 @@ What each pattern of plug-ins gives:
 | Start and end | Exact at both ends, linear in between. Also measures this camera's drift rate. |
 | Start only | Exact at the start; drift after it uncorrected, or corrected with this camera's rate from an earlier deployment. |
 | End only | The whole boot back-dated from the end fix, the same way, with or without a known rate. |
-| On throughout | A point every minute; drift corrected as it happens. |
 | None | `time` stays the camera's opinion, as today. |
 
 For scale: an uncorrected crystal is typically good to a few tens of parts
@@ -611,8 +770,8 @@ So:
 
 ## For Nolan
 
-`wildlife_gps.py` is a good candidate for its own numbered step, because the
-interesting part is entirely readable:
+`wildlife_gps.py` is the README's step 10 (see "How much code, and what the
+files are called"), because the interesting part is entirely readable:
 
 - `cat /dev/ttyACM0` shows the satellites talking, one line a second.
 - Each line is a list of fields separated by commas --- `line.split(",")`.
@@ -680,15 +839,9 @@ and there is nothing hidden.
 
 ## Open questions
 
-- **Start-and-end, or on throughout?** The design works either way.
-  Start-and-end costs a few minutes of battery and gives a linear
-  correction; on throughout keeps the clock right as it goes and shows how
-  far from linear the drift really is. One camera run each way for a week,
-  side by side, would settle both the battery cost and whether linear is
-  good enough.
-- **Do we have enough dongles** for one per camera at a campout, or does
-  one dongle go round the cameras at setup and again at pickup? The design
-  does not care, but the checklist does.
+- **How many dongles?** One or two, carried round. Worth timing a fix at
+  each site at the first campout with them: if under-canopy fixes take ten
+  minutes, setup of eight cameras wants two.
 - **Precision on the card.** Five decimal places is about a metre, which is
   more than the receiver can honestly give and is fine for the private
   archive given that the public copy is stripped. Rounding on the card is
