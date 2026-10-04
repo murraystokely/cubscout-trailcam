@@ -49,17 +49,27 @@ Things to know before plugging one in:
 
 - **A Pi Zero 2 W needs a micro-USB OTG adapter**, on the port marked USB,
   not PWR. The Pi 4s and 5s take it directly.
-- **First fix is slow.** With open sky, under a minute. Under oak canopy, or
-  on a cold start after travelling, it can be several minutes, and the
-  dongle's antenna is small. The program has to be patient and say what it
-  is waiting for.
+- **First fix: about a minute and a half in the open.** Measured on
+  2026-10-04 with the dongle on a laptop in the back garden, cold (the
+  VK-162 keeps nothing between plug-ins): first sentence at once, time of
+  day at 0:59, first valid fix at 1:15, trusted fix (below) at **1:20**,
+  with 7 satellites and HDOP 1.1. Under oak canopy it will be slower, and
+  the dongle's antenna is small, so the program has to be patient and say
+  what it is waiting for.
+- **Position: a few metres.** Over the ten minutes after the trusted fix,
+  half the fixes were within 2.3 m of their median and 95% within 5.8 m;
+  the first valid fix was 3.6 m off. A median over a few minutes is
+  plenty for a trail camera.
 - **It costs battery, and money.** Roughly a fifth of what a Zero 2 W
   draws, and a dongle per camera adds up. So we do not leave one on each
   camera: a dongle or two go round the cameras at setup and again at
   takedown (decided 2026-10-04). Everything below is designed for that.
-- **No PPS over USB**, so the time is good to a few hundred milliseconds,
-  not microseconds. That is a thousand times better than we have now and
-  more than the photographs need.
+- **No PPS over USB**, so time comes from the text sentences, not a
+  precise pulse. Measured: once the leap seconds are right (next section),
+  sentences arrive about **45 ms** after the second they describe,
+  steadily. Far better than the photographs need. The very first valid
+  sentence arrived 1.2 s late, one more reason not to trust the first
+  second.
 - **Only our program reads the port.** That takes no setup: Raspberry Pi
   OS does not install `gpsd`, and the udev rule below tells `ModemManager`,
   if an image has it, to leave the dongle alone (one property on the rule,
@@ -224,7 +234,11 @@ A fix is **trusted** when all of these hold:
 4. the position is not `0, 0` and is not blank;
 5. **five consecutive seconds** pass all of the above, agree with each
    other's position to within about 50 m, and their GPS times advance in
-   step with the Pi's monotonic clock to within a second.
+   step with the Pi's monotonic clock to within a second;
+6. **the leap-second count is known**: either the receiver says it heard
+   it from the satellites, or we have its count and correct for it
+   ourselves. See "Leap seconds" below; without this the time is two
+   seconds wrong while passing every other check.
 
 Until the first trusted fix of an attachment, `wildlife_gps.py` writes
 **nothing**: no `gps.json`, no log row, no clock change. It prints a status
@@ -241,6 +255,73 @@ The camera programs check too: `where_and_when()` ignores a `gps.json`
 without a `position` block or with an unparseable one. Two checks for the
 same thing, because the cost of a wrong location in a photograph is that
 it is believed.
+
+### Leap seconds: the dongle's first UTC is two seconds wrong
+
+Found in the first real test, 2026-10-04, and confirmed by asking the
+receiver.
+
+GPS satellites keep their own time, which does not have leap seconds. UTC
+does, and GPS time is currently **18 seconds** ahead of it. A receiver
+reports UTC by subtracting the current leap-second count. It learns that
+count from a message the satellites send only once every **12.5 minutes**.
+Until it has heard it, it subtracts a number stored in its firmware.
+
+This dongle's firmware is `ROM CORE 1.00`, built 27 June 2012 (it says so
+in the `$GPTXT` lines it sends at start-up). Its stored number is **16**.
+Two leap seconds have been added since (2015 and 2016). So for the first
+12.5 minutes or so after lock, every sentence's time is exactly **2 seconds
+fast**, while looking completely valid: status `A`, plenty of satellites,
+good HDOP, steady from one second to the next. The trust test above
+passes it, because the error is the same every second.
+
+What we saw:
+
+| Time (UTC) | Receiver says | GPS minus laptop clock (laptop on NTP) |
+|---|---|---|
+| 22:51:44 | first time of day; satellites locked | |
+| 22:52:00 -- 23:02:58 | `leapS=16`, leap flag **not** set | **+1.95 s**, steady |
+| 23:03:39 | `leapS=18`, leap flag set | **−0.04 s** |
+
+The switch came about 12 minutes after lock. Setup takes five minutes per
+camera, so as the design stood **every setup fix would have set the
+camera's clock 2 seconds fast**, and most takedown fixes would have
+measured drift against the same wrong number.
+
+**How `wildlife_gps.py` handles it.** u-blox receivers also speak a binary
+protocol, UBX, alongside NMEA on the same port. One 8-byte poll,
+`UBX-NAV-TIMEGPS` (`B5 62 01 20 00 00 21 64`), gets a 24-byte reply with
+the leap-second count the receiver is using and a flag saying whether it
+came from the satellites. This was tested on our dongle; it only reads,
+and changes nothing on the receiver. So:
+
+1. Poll `NAV-TIMEGPS` every few seconds while attached.
+2. If the leap flag is set, use the receiver's UTC as it is.
+3. If not, correct it ourselves: subtract `LEAP_SECONDS − leapS`, where
+   `LEAP_SECONDS = 18` is a constant in the program. With the receiver
+   saying 16, that subtracts 2 s. No waiting.
+4. Log `leap_s` and `leap_valid` on every row, so the laptop can always see
+   which kind of time it was given.
+5. If the flag becomes set while the dongle is still in and the receiver's
+   count disagrees with `LEAP_SECONDS`, believe the receiver, measure
+   again, and say so in the journal. That is how we would find out about a
+   new leap second.
+
+The constant is safe: no leap second has been added since the end of 2016,
+the international timekeeping bodies have voted to stop adding them by
+2035, and step 5 catches one if it ever happens. It also makes a good
+lesson for Nolan: the dongle's memory is from 2012, and the world's
+clocks have changed twice since.
+
+Two consequences for the rest of the design:
+
+- **Measure from the median of the trusted seconds, not the first.** The
+  first valid sentence arrived 1.2 s late; after that, every sentence was
+  within a few milliseconds of 45 ms late.
+- **Waiting out the 12.5 minutes is the fallback**, not the plan: if a
+  different receiver does not answer the UBX poll, the program should not
+  set the clock until 13 minutes after lock and should say why in the
+  status line.
 
 ## Where the location lives
 
@@ -345,9 +426,9 @@ next camera --- it repeats the same measure-then-correct every ten minutes,
 with each one going into the log. That is a side effect, not a way we plan
 to run.
 
-NMEA sentences arrive a few hundred milliseconds after the instant they
-describe. That bias is the same at every attachment, so it cancels out of
-the drift rate, and it is well inside the one-second threshold.
+NMEA sentences arrive about 45 ms after the instant they describe
+(measured). That bias is the same at every attachment, so it cancels out
+of the drift rate; it is too small to matter for anything else.
 
 If `/run/systemd/timesync/synchronized` exists, a network time server is
 already in charge: measure and log, but skip step 2. See "When there is a
@@ -676,11 +757,11 @@ in more than one day folder; the laptop reads all of them for the boot.
 above, so every row can be believed.
 
 ```
-gps_utc,pi_utc,uptime_s,offset_s,stepped_s,attachment,lat,lon,alt_m,hdop,satellites,network_synced
-2026-10-11T16:02:11.00Z,2026-10-06T21:29:53.40Z,84.2,412337.6,412337.6,1,37.33333,-121.70000,412.3,1.2,7,0
-2026-10-11T16:03:11.00Z,2026-10-11T16:03:11.10Z,144.2,-0.1,,1,37.33334,-121.69999,411.8,1.2,8,0
+gps_utc,pi_utc,uptime_s,offset_s,stepped_s,attachment,leap_s,leap_valid,lat,lon,alt_m,hdop,satellites,network_synced
+2026-10-11T16:02:11.00Z,2026-10-06T21:29:53.40Z,84.2,412337.6,412337.6,1,18,1,37.33333,-121.70000,412.3,1.2,7,0
+2026-10-11T16:03:11.00Z,2026-10-11T16:03:11.10Z,144.2,-0.1,,1,18,1,37.33334,-121.69999,411.8,1.2,8,0
 ...
-2026-11-08T16:01:24.50Z,2026-11-08T16:02:12.80Z,2419286.0,-48.3,-48.3,2,37.33332,-121.70001,413.0,1.4,6,0
+2026-11-08T16:01:24.50Z,2026-11-08T16:02:12.80Z,2419286.0,-48.3,-48.3,2,18,0,37.33332,-121.70001,413.0,1.4,6,0
 ```
 
 - One row at each attachment's first trusted fix, then one a minute while
@@ -690,6 +771,10 @@ gps_utc,pi_utc,uptime_s,offset_s,stepped_s,attachment,lat,lon,alt_m,hdop,satelli
   have no business in this file). `offset_s` is GPS minus Pi, before any correction;
   `stepped_s` is how far the clock was then moved, blank if it was not.
 - `attachment` counts plug-ins within the boot, from 1.
+- `leap_s` is the leap-second count the time was computed with, and
+  `leap_valid` whether the receiver had heard it from the satellites (1)
+  or we corrected its firmware default ourselves (0). The takedown row in
+  the example is a five-minute visit, so it is 0, and still right.
 - `network_synced` is 1 if `/run/systemd/timesync/synchronized` exists,
   meaning a time server may also have adjusted the clock; the laptop
   leaves those rows out of the drift fit.
@@ -832,6 +917,10 @@ and there is nothing hidden.
 - **The drift fit** on the laptop, from a synthetic log with a known rate:
   start-and-end, start only, end only, a step in the middle, and rows
   marked `network_synced`.
+- **Leap seconds.** The 2026-10-04 garden recording covers both states
+  (`leapS=16` not valid, then 18 valid) and makes the fixture: the
+  corrected time must be the same, to within 0.1 s, either side of the
+  switch.
 - **The reader and the three cases** --- same boot, earlier boot, missing ---
   plus a `gps.json` with no position, with hand-written files.
 - **On a camera:** `exiftool -gps:all -DateTimeOriginal <photo>.jpg`, and
