@@ -70,30 +70,31 @@ Things to know before plugging one in:
 Two programs, one file between them:
 
 ```
-VK-162 ──NMEA──> wildlife_gps.py ──writes──> /var/lib/wildlifecam/gps.json
+VK-162 ──NMEA──> step10_gps.py ──writes──> /var/lib/wildlifecam/gps.json
                    │       │                            │
                    │       └──appends──> photos/<day>/gps-<camera>-<boot>.csv
                    │                     (synced with the photos; the laptop
                    │                      corrects times from it)
                    └──measures, then sets, the system clock
                                                         │
-                                       read at every save by step8 / step9
+                                read at every save by step10_aicamera.py
+                                                   and step10_picam3.py
                                                         └──> sidecar + EXIF
 ```
 
-**`wildlife_gps.py`** is a new, small, standalone program, started by systemd
+**`step10_gps.py`** is a new, small, standalone program, started by systemd
 when the dongle is plugged in and stopped when it is pulled out. It reads
 NMEA, and once it trusts the fix it measures how wrong the clock is, sets
 it, and writes the state file and the log.
 
-**step 8 and step 9** never touch the dongle. When they save a photograph
+**The camera programs** never touch the dongle. When they save a photograph
 they read the state file, decide whether it belongs to this boot, and copy
 what it says into the JSON sidecar and the JPEG's EXIF.
 
 Keeping them apart is the point. The camera programs stay unprivileged and
 keep working with no dongle, a broken dongle, or a dongle pulled out
 mid-run; a crash in GPS parsing can never cost a photograph. And
-`wildlife_gps.py` is small enough to be its own lesson.
+`step10_gps.py` is small enough to be its own lesson.
 
 ### How this relates to the usual tools: gpsd, chrony, timesyncd
 
@@ -132,7 +133,7 @@ buys little and costs a lot:
 - Both are black boxes to a fourth grader, where `$GPRMC,...,A,...` and
   "the `A` means it knows where it is" is not.
 
-So we keep timesyncd for networks and add `wildlife_gps.py` for GPS.
+So we keep timesyncd for networks and add `step10_gps.py` for GPS.
 Revisit chrony if cameras ever need time good to the millisecond across
 each other (matching one animal across two cameras' frames), which would
 also mean a GPS with a PPS wire, not a USB dongle.
@@ -143,7 +144,7 @@ Normally there is not: in the field, GPS is the only source. But a camera
 at home on Wi-Fi, or near a phone hotspot at camp, will reach a time server
 through timesyncd, and then there are two things that can set the clock.
 The rule is simple: **when the network has synchronised the clock,
-`wildlife_gps.py` measures and logs but does not set it.** It knows by the
+`step10_gps.py` measures and logs but does not set it.** It knows by the
 file `/run/systemd/timesync/synchronized`, which timesyncd creates when it
 first reaches a server and which disappears at reboot.
 
@@ -206,7 +207,7 @@ A fix is **trusted** when all of these hold:
    other's position to within about 50 m, and their GPS times advance in
    step with the Pi's monotonic clock to within a second.
 
-Until the first trusted fix of an attachment, `wildlife_gps.py` writes
+Until the first trusted fix of an attachment, `step10_gps.py` writes
 **nothing**: no `gps.json`, no log row, no clock change. It prints a status
 line to the journal once a minute (`waiting: 3 satellites, no fix yet`) so
 that `journalctl -u wildlife-gps` says what it is waiting for. If the fix is
@@ -274,7 +275,7 @@ What it holds:
 }
 ```
 
-- **`boot`** is the same eight characters step 8 and step 9 already write
+- **`boot`** is the same eight characters steps 8 and 9 already write
   into every sidecar, from `/proc/sys/kernel/random/boot_id`.
 - **`position` is a median, not the latest reading.** A trail camera does
   not move, and single GPS readings wander by several metres. It is the
@@ -304,7 +305,7 @@ Not once a second; it is an SD card.
 
 ## Setting the clock
 
-At each attachment's first trusted fix, `wildlife_gps.py`:
+At each attachment's first trusted fix, `step10_gps.py`:
 
 1. **measures first:** reads the Pi's clock and the fix's GPS time
    together, and records the offset (in `gps.json` and in the log, flushed
@@ -341,10 +342,10 @@ root.
 by hours or days at the first attachment, by seconds in either direction
 at a later one. Step 9 already uses `time.monotonic()` for its intervals
 and handles this. **Step 8 uses `time.time()`** for its cooldown, heartbeat
-and confirmation timeouts (`step8_reject_shadows.py` around line 1139). A
+and confirmation timeouts (`step8_reject_shadows.py` around line 1139), so
+`step10_aicamera.py` moves those to `time.monotonic()`. A
 forward jump is harmless; a backward one would hold the cooldown shut
-until wall time caught up. Switching those to `time.monotonic()` is part of
-this work and should land first. Day folders and names need nothing: after
+until wall time caught up. Day folders and names need nothing: after
 the jump the next photograph goes into the right day's folder, and
 `unused_name()` already copes with a name that comes round twice.
 
@@ -383,7 +384,7 @@ two:
    [Service]
    User=webelos
    AmbientCapabilities=CAP_SYS_TIME
-   ExecStart=/usr/bin/python3 -u /home/webelos/wildlife_gps.py /dev/gps0
+   ExecStart=/usr/bin/python3 -u /home/webelos/step10_gps.py /dev/gps0
    Restart=on-failure
    ```
 
@@ -406,13 +407,13 @@ way the photo directory is.
 
 **Knowing it worked, in the field.** At the end of a deployment, the person
 collecting the camera needs to know the fix has been taken before they
-switch it off. `wildlife_gps.py` writes a one-line status, with no
+switch it off. `step10_gps.py` writes a one-line status, with no
 coordinates in it, to `/var/www/html/gps-status.txt` --- `waiting: 3
 satellites`, then `fix 16:02:11 UTC; clock was 48.3 s fast; corrected` ---
 which a phone on the camera's Wi-Fi can read. (Check whether the VK-162's
 LED changes when it has a fix; if it does, that is simpler still.)
 
-## How step 8 and step 9 read it
+## How the camera programs read it
 
 Each program keeps the last `gps.json` it read in memory, and at each saved
 photograph --- not at each look --- asks the filesystem one question: has
@@ -454,7 +455,7 @@ def where_and_when():
 
 The test is "has it **changed**", not "is it **newer**": the file's
 modification time comes from the clock GPS is busy correcting, so it can
-go backwards. `wildlife_gps.py` replaces the file with `os.replace()`, which
+go backwards. `step10_gps.py` replaces the file with `os.replace()`, which
 gives it a new inode every time, so the inode alone would do; the
 modification time is there in case it ever does not.
 
@@ -476,7 +477,7 @@ how often to ask whether it is stale. Once an hour loses the photographs that ma
 And the hourly check would save almost nothing. A `stat` is one system
 call: microseconds, no reading of the SD card (the directory entry is in
 the kernel's cache after the first time), no memory beyond a few numbers.
-It happens at most once per *saved* photograph, which step 8 and step 9
+It happens at most once per *saved* photograph, which the camera programs
 limit to 720 and 1,440 an hour, against a JPEG encode and a 1--3 MB write
 taking a large fraction of a second each. Even the uncached version ---
 open and parse a 1 KB file each save --- would be well under a
@@ -565,19 +566,49 @@ out rather than stamp a time we know may be wrong.
 **Library:** `piexif` --- pure Python, small, in Raspberry Pi OS as
 `python3-piexif`. It builds the EXIF block and inserts it into a JPEG.
 
-**One write, not two.** Step 8 saves with `cv2.imwrite`; step 9 with
+**One write, not two.** Step 8's code saves with `cv2.imwrite`; step 9's with
 `picam2.capture_file`. Neither writes our tags. Rather than save the file
 and then rewrite it with EXIF inserted (two writes of a 1--3 MB file per
-photograph), encode to memory first --- `cv2.imencode` in step 8, capture
-into a `BytesIO` in step 9 --- `piexif.insert` into the bytes, and write
+photograph), encode to memory first --- `cv2.imencode` in `step10_aicamera.py`, capture
+into a `BytesIO` in `step10_picam3.py` --- `piexif.insert` into the bytes, and write
 once. If building the EXIF fails for any reason, write the photograph
 without it: as with the sidecar, metadata is never worth losing a
 photograph over.
 
-## How much code, and what the files are called
+## Step 10: three files, and how much code
 
-**In step 8 and step 9**, roughly the same in each, because each is written
-to be read on its own and they already repeat `boot_id()` and friends:
+GPS is step 10, and it comes as three files:
+
+| File | What it is |
+|---|---|
+| `step10_gps.py` | New. The program the dongle starts: NMEA, the trusted-fix test, the clock, `gps.json`, the log. |
+| `step10_aicamera.py` | Step 8 plus GPS, for the AI Camera. |
+| `step10_picam3.py` | Step 9 plus GPS, for the ordinary Camera Module. |
+
+`final_motion_capture.py` launches the two step 10 camera programs instead
+of step 8 and step 9, and **step 8 and step 9 stay as they are**, the way
+every earlier step has: a finished lesson. That is the project's rule ---
+each step small enough to see what changed --- and here what changed is
+exactly the diff from step 8 to `step10_aicamera.py` and from step 9 to
+`step10_picam3.py`: about 120 lines, all of them GPS (and step 8's clock
+fix). A Scout can read that diff as the lesson. From now on, tuning and
+fixes to the camera rules go into the step 10 files.
+
+The names put the hardware in the filename, which is better than step 8
+versus step 9, which say nothing about which camera each is for. One
+thing to check before settling on `picam3`: step 9 runs on any ordinary
+Camera Module, so if any camera has an older v2 module, a name like
+`step10_camera_module.py` would be truer.
+
+The rename costs one launcher edit and the README; the laptop code
+mentions step 8 only in comments, and identifies what wrote a photograph by
+the `code` fingerprint in its sidecar, not by file name. A step 10 sidecar
+gets a new fingerprint like any other code change, so `ai/trailcam` treats
+it as a new run with nothing to change. The cards all need updating
+between campouts anyway, and this is one more file to copy.
+
+What the 120 lines are, roughly the same in each camera program, because
+each is written to be read on its own:
 
 | Piece | Lines |
 |---|---|
@@ -589,51 +620,19 @@ to be read on its own and they already repeat `boot_id()` and friends:
 | The `/etc/wildlifecam/gps` off switch | ~5 |
 | **Total** | **~120** |
 
-About 7% more for step 8 (1,687 lines today) and 20% for step 9 (633).
-Step 8 also gets its `time.time()` intervals moved to `time.monotonic()`,
-a change of a dozen lines that does not add any.
+Plus, in `step10_aicamera.py`, a dozen lines of step 8's `time.time()`
+moved to `time.monotonic()`.
 
-**`wildlife_gps.py`** is new and standalone: the NMEA parser (~60), the
+**`step10_gps.py`** is new and standalone: the NMEA parser (~60), the
 trusted-fix test (~40), measure-then-set (~30), `gps.json` with its median
 and attachments (~50), the log (~30), the status line, the main loop and
 explanations in the style of the step files --- 300 to 400 lines in all.
-
-**Is it a step 10?** As a lesson, yes: it introduces new ideas (serial
-devices, NMEA, checksums, setting the clock, programs started by plugging
-something in) and the README should teach it as one. As a file, no. The
-numbered steps are the camera programs, each a successor to the last, and
-the launcher runs step 8 or 9; this is not their successor but a second
-program that runs beside them. Calling it `step10_gps.py` would suggest
-it replaces step 9. Keep the name `wildlife_gps.py` (like
-`final_motion_capture.py`, it says what it is for) and give it a README
-section, "Step 10 --- Where and when am I?", that links to it.
-
-**Renaming step 8 and 9 to `step10_aicamera.py` and `step10_picam3.py`:**
-not now, and not with this work. The hardware in the name is a good idea
-in itself --- step 8 versus step 9 says nothing about which camera
-each is for. But the rename is all cost at the moment:
-
-- `final_motion_capture.py` launches them by name, so every card needs the
-  launcher and both renamed files updated together, or the camera falls
-  back to the wrong program or does not start.
-- Eleven cards in the field, other families' among them, each needing a
-  visit.
-- The README, the cheatsheet, `ai/README.md`, the results write-ups and
-  `ai/trailcam` all say "step 8"; the `runs` table is keyed by step 8
-  version.
-- `picam3` is not quite right either: step 9 is for any ordinary Camera
-  Module, not only the v3.
-
-GPS slots into both files as they are, the way the millisecond names and
-the hourly ceilings did. If the rename is wanted, it is its own change,
-made at a time when every card is in hand anyway --- the start of a
-season, say --- and with nothing else in it.
 
 ## The log
 
 The sidecars only exist where there are photographs, and the
 end-of-deployment fix comes after the last one. So the record of truth for
-position and time is a per-boot log written by `wildlife_gps.py`:
+position and time is a per-boot log written by `step10_gps.py`:
 
 ```
 /var/www/html/photos/<day>/gps-<camera>-<boot>.csv
@@ -763,15 +762,15 @@ So:
    home. Park sites are public places and can live in the repo; home sites'
    coordinates belong in the private repo with the camera owners table.
 3. **A per-camera off switch.** `/etc/wildlifecam/gps` containing `off`
-   makes step 8 and step 9 use GPS for the clock only and write no
+   makes the camera programs use GPS for the clock only and write no
    position into sidecars or EXIF. Families who would rather not have a
    location recorded at home get that by default; the campout cameras turn
    it on.
 
 ## For Nolan
 
-`wildlife_gps.py` is the README's step 10 (see "How much code, and what the
-files are called"), because the interesting part is entirely readable:
+`step10_gps.py` is the part of step 10 with new ideas in it, and the
+interesting part is entirely readable:
 
 - `cat /dev/ttyACM0` shows the satellites talking, one line a second.
 - Each line is a list of fields separated by commas --- `line.split(",")`.
@@ -795,7 +794,7 @@ and there is nothing hidden.
   That one file, checked in under `tests/` (with the coordinates shifted
   well away from anywhere real), drives parser and averaging tests: cold
   start `V` lines, the first `A`, bad checksums, a fix that wanders.
-- **Replay it** through a pseudo-terminal (`socat`) to run `wildlife_gps.py`
+- **Replay it** through a pseudo-terminal (`socat`) to run `step10_gps.py`
   end to end without a dongle, with the clock-setting call replaced so the
   test does not change the test machine's time.
 - **Nothing untrusted gets written.** Feed the replay a cold start, a
@@ -818,19 +817,24 @@ and there is nothing hidden.
 
 ## Order of work
 
-1. Step 8 intervals onto `time.monotonic()`. Independent and small; makes
-   clock jumps safe whatever sets the clock.
+1. Copy step 8 to `step10_aicamera.py` and step 9 to `step10_picam3.py`,
+   unchanged, and point `final_motion_capture.py` at them. A commit of its
+   own, so that every later diff against step 8 and step 9 is only the new
+   lesson. Then move `step10_aicamera.py`'s intervals onto
+   `time.monotonic()`, which makes clock jumps safe whatever sets the
+   clock.
 2. GPS stripping in the publish path, and the `/etc/wildlifecam/gps` switch.
    Nothing on a camera writes a location until these exist.
-3. `wildlife_gps.py`, the udev rule and the service: the trusted-fix
+3. `step10_gps.py`, the udev rule and the service: the trusted-fix
    test, measure-then-set, `gps.json`, the log and the status line. Useful
    on its own --- it fixes the clock problem and starts collecting drift
    measurements --- before any photograph carries a position.
-4. `where_and_when()`, the sidecar blocks and EXIF in step 9, then step 8.
+4. `where_and_when()`, the sidecar blocks and EXIF in `step10_picam3.py`,
+   then `step10_aicamera.py`.
 5. The image: `python3-piexif` installed, `ModemManager` and `gpsd` absent,
    `/var/lib/wildlifecam` created, rule and service in place; the clone
    instructions updated to match.
-6. The deployment checklist: plug the dongle in at the start, at every
+6. The README's step 10 section, and the deployment checklist: plug the dongle in at the start, at every
    battery swap, and at the end before switching off; wait for the status
    line to say the fix is taken.
 7. Laptop: `scan` reads the new blocks and logs, corrects times with the
