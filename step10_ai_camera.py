@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Step 8 -- telling a branch's shadow from an animal.
+"""Step 10, for the AI Camera -- step 8, ready for a clock that jumps.
+
+Step 10 starts as a copy of step8_reject_shadows.py.  The one change so
+far: every "how long since" in the main loop is timed with
+time.monotonic(), a stopwatch that only ever counts forward, instead of
+time.time(), the clock on the wall.  Step 10 is about to start setting
+the clock from GPS (docs/gps-design.md), and a wall clock that jumps
+back two seconds must not hold the save cooldown shut.  Step 9 has done
+this from the start.
+
+Everything below is step 8's own explanation, unchanged.
+
+Step 8 -- telling a branch's shadow from an animal.
 
 Step 7 photographs anything that moves and is the right size.  Under a tree
 that turns out to be mostly shadow: a day on the patio gave 750 photographs,
@@ -43,7 +55,7 @@ shadow.
 
 While you are choosing thresholds for your own camera site, run:
 
-    python3 -u step8_reject_shadows.py --dry-run
+    python3 -u step10_ai_camera.py --dry-run
 
 which saves no photographs but writes one row of measurements per check, so
 you can look at what your own patch of woods really does all day and pick
@@ -1134,9 +1146,15 @@ BACKGROUND_ALPHA_BUSY = min(1.0, LOOP_DELAY / BACKGROUND_TAU_BUSY)
 
 settle_checks = 0
 
+# Every "how long since" below is in time.monotonic() seconds: a
+# stopwatch that only counts forward, so a clock that jumps when GPS or
+# the network sets it cannot open or close a gate.  The 0.0 starting
+# values are fine: monotonic time is roughly seconds since boot, and the
+# longest gap timed from them is ten seconds.
+#
 # The next burst starts immediately, so a tuning session gets data at
 # once instead of an hour from now.
-record_next = time.time() if recording_enabled else None
+record_next = time.monotonic() if recording_enabled else None
 record_until = 0.0
 record_last = 0.0
 record_lores_last = 0.0
@@ -1148,9 +1166,9 @@ near_miss_times = []
 
 disk_ok = True
 last_disk_check = 0.0
-last_heartbeat = time.time()
+last_heartbeat = time.monotonic()
 
-print(f"step8 code {CODE_VERSION} on {BOARD or 'an unrecognised board'}")
+print(f"step10_ai_camera code {CODE_VERSION} on {BOARD or 'an unrecognised board'}")
 print(f"  photographs {MAIN_SIZE[0]}x{MAIN_SIZE[1]}, {BUFFER_COUNT} buffers"
       f"{'  (small-board settings)' if SMALL_BOARD else ''} into {photo_dir}")
 print(f"Watching for wildlife on {CAMERA_NAME}"
@@ -1174,7 +1192,7 @@ while True:
 
     try:
         now = datetime.now()
-        moment = time.time()
+        moment = time.monotonic()
 
         # ----------------------------------------------------
         # Protect the filesystem, but stay alive

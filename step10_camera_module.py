@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Step 9 -- the same lesson, without the AI Camera.
+"""Step 10, for an ordinary Camera Module -- step 9, about to learn the time.
+
+Step 10 starts as a copy of step9_plain_motion.py, and what it adds is
+described in docs/gps-design.md.  Everything below is step 9's own
+explanation, unchanged.
+
+Step 9 -- the same lesson, without the AI Camera.
 
 Steps 6, 7 and 8 were written for the Raspberry Pi AI Camera, and because
 of that the cameras with an ordinary Camera Module never got them.  They
@@ -40,12 +46,12 @@ almost none of the work.
 
 Run it by hand to watch it think:
 
-    python3 step9_plain_motion.py
+    python3 step10_camera_module.py
 
 Or measure a site without filling the card up, which is what you want
 before choosing BIGGEST_BLOB_TO_SAVE for a new position:
 
-    python3 step9_plain_motion.py --record
+    python3 step10_camera_module.py --record
 """
 
 import argparse
