@@ -474,39 +474,31 @@ LED changes when it has a fix; if it does, that is simpler still.)
 
 Each program keeps the last `gps.json` it read in memory, and at each saved
 photograph --- not at each look --- asks the filesystem one question: has
-the file been replaced since? Only if it has does it read it again. One
-function, written out in each file the way `boot_id()` and
-`seconds_since_boot()` already are, so either step still reads top to
-bottom on its own:
+the file been replaced since? Only if it has does it read it again. The
+code is in `photo_gps.py` (see "File names, and how much code"); the
+heart of it:
 
 ```python
-GPS_FILE = "/var/lib/wildlifecam/gps.json"
-gps_cache = {"stamp": None, "gps": None}
-
-
-def where_and_when():
-    """What the GPS program last wrote, and whether it is about this boot.
-
-    Kept in memory.  We only read the file again when it has been
-    replaced, which happens a few times a boot at most: at setup and at
-    takedown.
-    """
+def where_and_when(boot_id):
+    """What the GPS program last wrote, and whether it is about this boot."""
     try:
         info = os.stat(GPS_FILE)
     except OSError:
-        return None                      # no dongle has ever been plugged in
-    stamp = (info.st_ino, info.st_mtime_ns)
+        return None                      # no dongle this boot, or ever
+    stamp = (info.st_ino, info.st_mtime_ns, info.st_size)
     if stamp != gps_cache["stamp"]:
         gps_cache["stamp"] = stamp
         gps_cache["gps"] = None
         try:
             with open(GPS_FILE) as f:
                 gps = json.load(f)
-            if "lat" in gps.get("position", {}):     # not a fix we can use
-                gps["this_boot"] = gps.get("boot") == BOOT_ID
-                gps_cache["gps"] = gps
-        except (OSError, ValueError):
-            pass
+            position = gps["position"]
+            float(position["lat"])       # must both be numbers
+            float(position["lon"])
+            gps["this_boot"] = gps.get("boot") == boot_id
+            gps_cache["gps"] = gps
+        except Exception as problem:
+            complain(f"ignoring {GPS_FILE}: {problem!r}")
     return gps_cache["gps"]
 ```
 
@@ -653,6 +645,7 @@ Two kinds of file, named differently on purpose:
 | File | What it is |
 |---|---|
 | `wildlife_gps.py` | New service, started by the dongle: NMEA, the trusted-fix test, the clock, `gps.json`, the log. |
+| `photo_gps.py` | New module the two camera programs import: read `gps.json`, the sidecar blocks, the EXIF tags, save the photograph with them and push it onto the card. |
 | `step10_ai_camera.py` | Step 8 plus GPS, for the Raspberry Pi AI Camera. |
 | `step10_camera_module.py` | Step 9 plus GPS, for an ordinary Camera Module. |
 
@@ -665,26 +658,33 @@ step 8 and step 9, and **step 8 and step 9 stay as they are**, the way every
 earlier step has: a finished lesson. That is the project's rule --- each
 step small enough to see what changed --- and here what changed is exactly
 the diff from step 8 to `step10_ai_camera.py` and from step 9 to
-`step10_camera_module.py`: about 115 lines, all of them GPS (plus step 8's
-clock fix). A Scout can read that diff as the lesson. From now on, tuning
-and fixes to the camera rules go into the step 10 files.
+`step10_camera_module.py`: a guarded `import photo_gps`, two lines at
+each save, and step 8's clock fix. A Scout can read that diff as the
+lesson. From now on, tuning and fixes to the camera rules go into the
+step 10 files.
 
 The laptop code mentions step 8 only in comments, and identifies what
 wrote a photograph by the `code` fingerprint in its sidecar, not by file
 name. A step 10 sidecar gets a new fingerprint like any other code change,
 so `ai/trailcam` treats it as a new run with nothing to change.
 
-What those lines are, roughly the same in each camera program, because
-each is written to be read on its own:
+**Why a module, when the steps repeat `boot_id()` in each file.** The GPS
+code began as a copy in each camera program, following that habit. At
+about 200 lines it was plumbing, not lesson, and two copies meant a test
+whose only job was to check they had not drifted apart. So it moved into
+`photo_gps.py`, one copy, imported by both and tested directly. The
+import is guarded: if `photo_gps.py` is missing or broken, the camera
+program prints that once and saves photographs exactly as step 8 or 9
+did, because a camera that will not start is the worst outcome of all.
+
+`photo_gps.py`, roughly:
 
 | Piece | Lines |
 |---|---|
 | `where_and_when()` with its cache | ~30 |
-| Which clock to believe (`gps` / `network` / `saved`) | ~15 |
-| The `gps` and `clock` blocks in the sidecar | ~15 |
+| Which clock to believe, and the sidecar blocks | ~35 |
 | Building the EXIF (degrees to rationals, the tags) | ~40 |
-| Encode to memory, insert EXIF, write once | ~15 |
-| **Total** | **~115** |
+| `onto_the_card()`, `write_jpeg()`, `capture_with_gps()` | ~60 |
 
 Plus, in `step10_ai_camera.py`, a dozen lines of step 8's `time.time()`
 moved to `time.monotonic()`.
@@ -893,8 +893,8 @@ and there is nothing hidden.
    test, measure-then-set, `gps.json`, the log and the status line. Useful
    on its own --- it fixes the clock problem and starts collecting drift
    measurements --- before any photograph carries a position.
-3. `where_and_when()`, the sidecar blocks and EXIF in
-   `step10_camera_module.py`, then `step10_ai_camera.py`.
+3. `where_and_when()`, the sidecar blocks and EXIF, in `photo_gps.py`,
+   used by both step 10 programs.
 4. The image: `python3-piexif` installed, `/var/lib/wildlifecam` created,
    rule and service in place; the clone instructions updated to match.
 5. The README: a step 10 section for the camera programs and a section on
