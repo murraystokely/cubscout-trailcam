@@ -211,13 +211,14 @@ def fixes_from(lines):
 
     satellites is how many the fix USES, which is 0 until there is a fix;
     in_view is how many it can hear, from GSV, which says much more while
-    you wait.
+    you wait.  GSV comes at the END of each second, so in_view is None
+    until the first one has arrived.
 
     pi_time and uptime_s are from when the RMC arrived, the first sentence
     of that second.
     """
     rmc = None
-    in_view = 0
+    in_view = None
     for line, pi_time, uptime_s in lines:
         if not checksum_ok(line):
             continue
@@ -484,8 +485,12 @@ def run(device, state_dir, photo_dir, status_file, may_set_clock, lines=None):
                     progress = f"valid {trust.in_a_row} s in a row"
                 else:
                     progress = "no fix yet"
-                status(f"waiting: {fix['in_view']} satellites in view, "
-                       f"{fix['satellites']} in use, {progress}", status_file)
+                if fix["in_view"] is None:
+                    heard = f"{fix['satellites']} satellites in use"
+                else:
+                    heard = (f"{fix['in_view']} satellites in view, "
+                             f"{fix['satellites']} in use")
+                status(f"waiting: {heard}, {progress}", status_file)
             continue
 
         trusted.append(fix)
@@ -576,8 +581,12 @@ def main():
     parser.add_argument("--no-clock", action="store_true",
                         help="measure the clock but never set it")
     options = parser.parse_args()
-    return run(options.device, options.state_dir, options.photo_dir,
-               options.status_file, not options.no_clock)
+    try:
+        return run(options.device, options.state_dir, options.photo_dir,
+                   options.status_file, not options.no_clock)
+    except KeyboardInterrupt:
+        print("stopped", flush=True)    # Ctrl-C when running it by hand
+        return 0
 
 
 if __name__ == "__main__":

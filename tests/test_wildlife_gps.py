@@ -91,6 +91,10 @@ class ReadingSentences(unittest.TestCase):
         self.assertEqual(fixes[0]["in_view"], 9)
         self.assertEqual(fixes[0]["satellites"], 0)
 
+    def test_in_view_unknown_before_the_first_gsv(self):
+        fixes = list(wildlife_gps.fixes_from(seconds(1)))
+        self.assertIsNone(fixes[0]["in_view"])
+
     def test_garbled_line_is_dropped(self):
         lines = seconds(2)
         line, pi_time, uptime = lines[0]
