@@ -30,7 +30,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(HERE, "..")
 
 SHARED = ["GPS_FILE", "NETWORK_SYNCED", "gps_cache", "complaints",
-          "complain", "where_and_when", "gps_blocks", "gps_exif"]
+          "complain", "where_and_when", "gps_blocks", "gps_exif",
+          "onto_the_card"]
 
 # An 8x8 JPEG, as cv2.imencode makes it.
 TINY_JPEG = base64.b64decode(
@@ -173,6 +174,25 @@ class Base(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as out:
             gps = self.ns["where_and_when"]()
         return gps, out.getvalue()
+
+
+class OntoTheCard(Base):
+
+    def test_open_file_path_and_folder(self):
+        path = os.path.join(self.dir, "photo.jpg")
+        with open(path, "wb") as f:
+            f.write(b"bytes")
+            self.ns["onto_the_card"](f)
+        self.ns["onto_the_card"](path)
+        self.ns["onto_the_card"](self.dir)
+        self.assertEqual(self.ns["complaints"], set())
+
+    def test_failure_is_said_once_and_never_raised(self):
+        missing = os.path.join(self.dir, "gone.jpg")
+        with redirect_stdout(io.StringIO()) as out:
+            self.ns["onto_the_card"](missing)
+            self.ns["onto_the_card"](missing)
+        self.assertEqual(out.getvalue().count("could not push"), 1)
 
 
 class WhereAndWhen(Base):
@@ -385,6 +405,19 @@ class AiCameraWrite(Base):
         with redirect_stdout(io.StringIO()) as out:
             self.ns["write_jpeg"](filename, object(), tags)
         return filename, out.getvalue()
+
+    def pushed(self):
+        calls = []
+        self.ns["onto_the_card"] = lambda target: calls.append(
+            getattr(target, "name", target))
+        return calls
+
+    def test_both_paths_push_the_photo_onto_the_card(self):
+        tags = self.ns["gps_exif"](dict(a_fix(), this_boot=True))
+        for given in (tags, None):
+            calls = self.pushed()
+            filename, _ = self.write(FakeCv2(), given)
+            self.assertEqual(calls, [filename])
 
     def test_tags_in_the_file_written_once(self):
         cv2 = FakeCv2()

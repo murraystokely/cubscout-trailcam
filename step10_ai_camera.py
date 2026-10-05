@@ -294,6 +294,34 @@ def gps_exif(gps):
         return None
 
 
+def onto_the_card(target):
+    """Make sure a file is really on the SD card, not just in memory.
+
+    Linux keeps newly written data in memory for up to thirty seconds
+    before it writes it to the card.  A camera unplugged in that time
+    leaves files that exist but are empty: wildlifecam15 lost its last 22
+    photographs that way on 4 October 2026.  os.fsync asks for the data
+    to be written now.  The card writes the same bytes either way, so it
+    costs no battery to speak of; what changes is that we wait for it,
+    a fraction of a second per photograph, and only when one is saved.
+    target is an open file, a file name, or a folder (so a new file's
+    name is on the card too).
+    """
+    try:
+        if hasattr(target, "fileno"):
+            target.flush()
+            os.fsync(target.fileno())
+        else:
+            descriptor = os.open(target, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except OSError as problem:
+        name = getattr(target, "name", target)
+        complain(f"could not push {name} onto the card: {problem!r}")
+
+
 def board_model():
     """Which Raspberry Pi is this?  Empty string if we cannot tell."""
     try:
@@ -1057,6 +1085,7 @@ MEASUREMENT_FIELDS = [
 measurement_file = None
 measurement_writer = None
 measurement_day = None
+measurement_on_card_at = time.monotonic()
 
 
 def log_measurement(now, row):
@@ -1071,6 +1100,7 @@ def log_measurement(now, row):
     campout it happened on six cards.
     """
     global measurement_file, measurement_writer, measurement_day
+    global measurement_on_card_at
 
     day = now.strftime("%Y-%m-%d")
 
@@ -1095,7 +1125,14 @@ def log_measurement(now, row):
 
     measurement_writer.writerow(dict(row, boot=BOOT_ID,
                                      uptime_s=seconds_since_boot()))
+    # flush() only hands the row to Linux, which can hold it in memory
+    # for thirty seconds; once a minute, push it all onto the card.  Not
+    # every row: several writes a second, all day, would cost battery and
+    # wear the card.
     measurement_file.flush()
+    if time.monotonic() - measurement_on_card_at >= 60:
+        onto_the_card(measurement_file)
+        measurement_on_card_at = time.monotonic()
 
 
 # ------------------------------------------------------------
@@ -1138,10 +1175,12 @@ def write_jpeg(filename, image, gps_tags):
                               encoded.tobytes(), with_tags)
                 with open(filename, "wb") as f:
                     f.write(with_tags.getvalue())
+                    onto_the_card(f)
                 return
         except Exception as problem:
             complain(f"saving without GPS tags: {problem!r}")
     cv2.imwrite(filename, image, quality)
+    onto_the_card(filename)
 
 
 def save_event(now, image, decision, measurements, ai_detections):
@@ -1200,6 +1239,8 @@ def save_event(now, image, decision, measurements, ai_detections):
 
     with open(json_filename, "w") as file:
         json.dump(information, file, indent=2)
+        onto_the_card(file)
+    onto_the_card(day_directory)
 
     if save_annotated:
         save_annotated_copy(day_directory, base_filename, image,

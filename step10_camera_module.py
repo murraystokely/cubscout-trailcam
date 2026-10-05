@@ -448,6 +448,34 @@ def gps_exif(gps):
         return None
 
 
+def onto_the_card(target):
+    """Make sure a file is really on the SD card, not just in memory.
+
+    Linux keeps newly written data in memory for up to thirty seconds
+    before it writes it to the card.  A camera unplugged in that time
+    leaves files that exist but are empty: wildlifecam15 lost its last 22
+    photographs that way on 4 October 2026.  os.fsync asks for the data
+    to be written now.  The card writes the same bytes either way, so it
+    costs no battery to speak of; what changes is that we wait for it,
+    a fraction of a second per photograph, and only when one is saved.
+    target is an open file, a file name, or a folder (so a new file's
+    name is on the card too).
+    """
+    try:
+        if hasattr(target, "fileno"):
+            target.flush()
+            os.fsync(target.fileno())
+        else:
+            descriptor = os.open(target, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    except OSError as problem:
+        name = getattr(target, "name", target)
+        complain(f"could not push {name} onto the card: {problem!r}")
+
+
 def capture_with_gps(picam2, filename, gps_tags):
     """picam2.capture_file, with GPS tags added to the EXIF it already writes.
 
@@ -504,6 +532,7 @@ def write_sidecar(photo_path, now, measurement, gps=None):
     try:
         with open(os.path.splitext(photo_path)[0] + ".json", "w") as f:
             json.dump(information, f, indent=2)
+            onto_the_card(f)
     except OSError as problem:
         # A sidecar is never worth losing a photograph over.
         print(f"could not write the sidecar: {problem}")
@@ -562,6 +591,7 @@ class Measurements:
         self.day = None
         self.handle = None
         self.writer = None
+        self.on_card_at = time.monotonic()
 
     def record(self, now, measurement, saved, held=""):
         day_directory = f"{PHOTO_DIR}/{now.strftime('%Y-%m-%d')}"
@@ -594,7 +624,14 @@ class Measurements:
         })
         # Flush every row.  A trail camera is switched off by having its
         # battery pulled, so anything still sitting in a buffer is lost.
+        # flush() only hands the row to Linux, which can hold it in memory
+        # for thirty seconds; once a minute, push it all onto the card.
+        # Not every row: four writes a second, all day, would cost
+        # battery and wear the card.
         self.handle.flush()
+        if time.monotonic() - self.on_card_at >= 60:
+            onto_the_card(self.handle)
+            self.on_card_at = time.monotonic()
 
     def close(self):
         if self.handle is not None:
@@ -764,6 +801,8 @@ def main():
                 # From "main": the big one, with GPS tags if we have them.
                 capture_with_gps(picam2, filename, gps_exif(gps))
                 write_sidecar(filename, now, measurement, gps)
+                onto_the_card(filename)
+                onto_the_card(day_directory)
                 last_save_time = moment
                 save_times.append(moment)
                 print(f"kept {os.path.basename(filename)} -- "
