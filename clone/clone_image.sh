@@ -17,6 +17,8 @@
 #     clone shows this card's own boots and nobody else's;
 #   * reset the saved clock the Pi restores at boot, so a clone does not start
 #     life believing it is the day the master was last switched off;
+#   * delete the master's GPS fix and status line, so nothing on the clone
+#     describes where the master was;
 #   * record where the image came from in /etc/wildlife-clone.
 #
 # It deliberately does NOT write to an SD card: it only ever reads the master
@@ -284,6 +286,18 @@ fi
 clock_file="$MNT/var/lib/systemd/timesync/clock"
 if [ -e "$clock_file" ]; then
     touch "$clock_file"
+fi
+
+# If a GPS dongle was ever plugged into the master, gps.json holds where the
+# MASTER was. The camera programs already ignore it -- its boot id is not
+# the clone's -- so this is tidiness, not a fix: a file describing another
+# camera has no business on this card, and the status line would say
+# "fix ... corrected" about the master. Each camera learns its own position
+# the first time the dongle visits it.
+rm -f -- "${MNT:?}"/var/lib/wildlifecam/gps.json \
+         "${MNT:?}"/var/lib/wildlifecam/gps.json.tmp
+if [ -e "$MNT/var/www/html/gps-status.txt" ]; then
+    : > "$MNT/var/www/html/gps-status.txt"
 fi
 
 # Clearing the journal is right for everything that reads it, and wrong for

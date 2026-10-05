@@ -258,6 +258,8 @@ Anything left on the master is copied to every clone. On the Pi:
 ```bash
 rm -rf /var/www/html/photos/*        # test shots from building the master
 rm -f ~/.bash_history
+sudo rm -f /var/lib/wildlifecam/gps.json   # where the MASTER was, if a GPS
+                                           # dongle was ever plugged in
 ```
 
 The image file is the same size as the whole card whether the card is full
@@ -593,6 +595,19 @@ that day, and files its first photographs under that date until
 `systemd-timesyncd` reaches a time server. Touching it makes the floor the
 day the clone was made, which is the earliest date this card could honestly
 claim.
+
+### Forget the master's GPS fix
+
+```bash
+sudo rm -f /mnt/var/lib/wildlifecam/gps.json
+```
+
+If a GPS dongle was ever plugged into the master, this file says where the
+*master* was. The camera programs already ignore it, because its boot id is
+not the clone's, so this is tidiness rather than a fix: a file describing
+another camera has no business on this card. Each camera learns its own
+position the first time the dongle visits it. (`clone/clone_image.sh` does
+this for you.)
 
 ### Record where the image came from
 
