@@ -393,6 +393,53 @@ sudo reboot
 Do not log into the Pi to start anything. After it boots, walk in front
 of the camera and verify that a new photograph appears on the website.
 
+### The GPS dongle: clock and location
+
+[`wildlife_gps.py`](wildlife_gps.py) is not a step. It runs beside the
+camera program, and only while a VK-162 GPS dongle is plugged in: at setup
+and again at takedown. It sets the Pi's clock from the satellites (after
+measuring how wrong it was, which at takedown is the drift), and writes
+where the camera is to `/var/lib/wildlifecam/gps.json`. The step 10
+programs copy that into every photograph's sidecar and JPEG. Why it works
+this way is in [`docs/gps-design.md`](docs/gps-design.md).
+
+Install it once per camera, from a copy of this repository on the Pi:
+
+``` bash
+cp wildlife_gps.py final_motion_capture.py \
+   step10_ai_camera.py step10_camera_module.py /home/webelos/
+sudo install -d -o webelos -g webelos /var/lib/wildlifecam
+sudo install -m 644 config/90-wildlife-gps.rules /etc/udev/rules.d/
+sudo install -m 644 config/wildlife-gps.service /etc/systemd/system/
+sudo install -m 644 -o webelos -g webelos /dev/null /var/www/html/gps-status.txt
+sudo systemctl daemon-reload
+sudo udevadm control --reload
+sudo systemctl restart wildlife-camera
+```
+
+Do **not** `enable` `wildlife-gps`: plugging the dongle in starts it, and
+pulling it out stops it. (If the dongle was already plugged in while you
+installed, unplug it and plug it back in.)
+
+Check it:
+
+``` bash
+journalctl -u wildlife-camera -n 3      # "handing over to step10_..."
+journalctl -u wildlife-gps -f           # plug the dongle in, outdoors
+```
+
+Outdoors a fix takes about a minute and a half from cold. You should see
+`waiting: ... satellites in view`, then a line like
+`fix 16:02:11 UTC with 7 satellites; clock was 4.8 days slow; corrected`.
+A phone on the camera's Wi-Fi can read the same line at
+`http://<camera>/gps-status.txt`. After that, `timedatectl` shows the
+right time, and the next photograph's `.json` has a `gps` block and
+`"clock": {"source": "gps", ...}`.
+
+For the first twelve minutes after a cold start the time is two seconds
+fast (the dongle's firmware has old leap seconds). That is expected and
+accepted; see the design.
+
 ## nginx and the wildlife-camera website
 
 nginx provides a very small local website. This is particularly useful

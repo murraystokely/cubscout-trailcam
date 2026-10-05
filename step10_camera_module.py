@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Step 10, for an ordinary Camera Module -- step 9, about to learn the time.
 
-Step 10 starts as a copy of step9_plain_motion.py, and what it adds is
-described in docs/gps-design.md.  Everything below is step 9's own
-explanation, unchanged.
+Step 10 starts as a copy of step9_plain_motion.py and adds one thing,
+about a GPS dongle that visits the camera at setup and takedown
+(docs/gps-design.md; wildlife_gps.py does the visiting): each photograph
+says where it was taken and whether its time can be trusted, in a "gps"
+and a "clock" block in the sidecar and as GPS tags in the JPEG.  See
+where_and_when() and capture_with_gps().  None of it can cost a
+photograph: if any part fails, the photograph is saved exactly as step 9
+saved it.
+
+Everything below is step 9's own explanation, unchanged.
 
 Step 9 -- the same lesson, without the AI Camera.
 
@@ -302,7 +309,163 @@ def seconds_since_boot():
         return None
 
 
-def write_sidecar(photo_path, now, measurement):
+# ------------------------------------------------------------
+# Where and when: what the GPS dongle told us (step 10)
+# ------------------------------------------------------------
+#
+# wildlife_gps.py runs while a GPS dongle is plugged in, at setup and at
+# takedown, and writes what it learned to GPS_FILE.  When we save a
+# photograph we read it and copy it into the sidecar and the JPEG.  Every
+# part of this is allowed to fail: a photograph without a location is
+# fine, a lost photograph is not.  The whole design is in
+# docs/gps-design.md.
+
+GPS_FILE = "/var/lib/wildlifecam/gps.json"
+NETWORK_SYNCED = "/run/systemd/timesync/synchronized"
+
+try:
+    import piexif          # Picamera2 needs it too, so it is always here
+except ImportError:
+    piexif = None
+
+gps_cache = {"stamp": None, "gps": None}
+complaints = set()
+
+
+def complain(message):
+    """Print a problem once, not at every photograph."""
+    if message not in complaints:
+        complaints.add(message)
+        print(message, flush=True)
+
+
+def where_and_when():
+    """What the GPS program last wrote, and whether it is about this boot.
+
+    Kept in memory.  We only read the file again when it has been
+    replaced -- a few times a boot at most -- which one os.stat() tells
+    us.  The test is "changed", never "newer": the file's time comes from
+    the very clock GPS is busy correcting.
+
+    Returns None when there is no usable fix.
+    """
+    try:
+        info = os.stat(GPS_FILE)
+    except OSError:
+        return None                      # no dongle this boot, or ever
+    stamp = (info.st_ino, info.st_mtime_ns, info.st_size)
+    if stamp != gps_cache["stamp"]:
+        gps_cache["stamp"] = stamp
+        gps_cache["gps"] = None
+        try:
+            with open(GPS_FILE) as f:
+                gps = json.load(f)
+            position = gps["position"]
+            float(position["lat"])       # must both be numbers
+            float(position["lon"])
+            gps["this_boot"] = gps.get("boot") == BOOT_ID
+            gps_cache["gps"] = gps
+        except Exception as problem:
+            complain(f"ignoring {GPS_FILE}: {problem!r}")
+    return gps_cache["gps"]
+
+
+def gps_blocks(gps, uptime_s):
+    """The "gps" and "clock" blocks for a photograph's sidecar.
+
+    clock.source answers "can I trust this photograph's time?":
+        gps      GPS set the clock this boot, before this photograph
+        network  a time server set it (systemd-timesyncd says so)
+        saved    neither: whatever the Pi woke up believing, plus uptime
+    """
+    blocks = {}
+    clock = {"source": "saved"}
+    try:
+        if os.path.exists(NETWORK_SYNCED):
+            clock = {"source": "network"}
+        if gps:
+            position = gps["position"]
+            blocks["gps"] = {
+                "fix": "this boot" if gps["this_boot"] else "earlier boot",
+                "boot": gps.get("boot"),
+                "lat": float(position["lat"]),
+                "lon": float(position["lon"]),
+                "alt_m": position.get("alt_m"),
+                "hdop": position.get("hdop"),
+                "samples": position.get("samples"),
+            }
+            set_at = (gps.get("clock") or {}).get("first_set_uptime_s")
+            if (gps["this_boot"] and set_at is not None
+                    and uptime_s is not None and uptime_s >= set_at):
+                clock = {"source": "gps", "set_uptime_s": set_at}
+    except Exception as problem:
+        complain(f"could not describe the GPS fix: {problem!r}")
+    blocks["clock"] = clock
+    return blocks
+
+
+def gps_exif(gps):
+    """GPS tags for the JPEG, as a piexif "GPS" block, or None.
+
+    Only for a fix from THIS boot.  A fix from an earlier boot is probably
+    right (a battery swap on the same post), but EXIF has no way to say
+    "probably", and every photo viewer would show it as fact.
+    """
+    if piexif is None or not gps or not gps.get("this_boot"):
+        return None
+    try:
+        position = gps["position"]
+        lat = float(position["lat"])
+        lon = float(position["lon"])
+
+        def degrees_minutes_seconds(value):
+            # EXIF wants three fractions: 37.33333 -> 37/1, 19/1, 5999/100
+            hundredths = round(abs(value) * 360000)
+            return ((hundredths // 360000, 1),
+                    (hundredths % 360000 // 6000, 1),
+                    (hundredths % 6000, 100))
+
+        tags = {
+            piexif.GPSIFD.GPSVersionID: (2, 3, 0, 0),
+            piexif.GPSIFD.GPSLatitudeRef: "N" if lat >= 0 else "S",
+            piexif.GPSIFD.GPSLatitude: degrees_minutes_seconds(lat),
+            piexif.GPSIFD.GPSLongitudeRef: "E" if lon >= 0 else "W",
+            piexif.GPSIFD.GPSLongitude: degrees_minutes_seconds(lon),
+            piexif.GPSIFD.GPSMapDatum: "WGS-84",
+        }
+        if position.get("alt_m") is not None:
+            altitude = float(position["alt_m"])
+            tags[piexif.GPSIFD.GPSAltitudeRef] = 0 if altitude >= 0 else 1
+            tags[piexif.GPSIFD.GPSAltitude] = (round(abs(altitude) * 10), 10)
+        if position.get("hdop") is not None:
+            tags[piexif.GPSIFD.GPSDOP] = (round(float(position["hdop"]) * 100),
+                                          100)
+        piexif.dump({"GPS": tags})       # fail HERE, never while saving
+        return tags
+    except Exception as problem:
+        complain(f"saving without GPS tags: {problem!r}")
+        return None
+
+
+def capture_with_gps(picam2, filename, gps_tags):
+    """picam2.capture_file, with GPS tags added to the EXIF it already writes.
+
+    Picamera2 encodes the JPEG in memory and splices its own EXIF block
+    (camera, exposure, time) in as it writes the file, once.  exif_data
+    adds our GPS tags to that same block, so there is no second write.
+    If that fails for any reason -- an older Picamera2 without exif_data,
+    say -- the photograph is taken again without them, as step 9 did.
+    """
+    if gps_tags:
+        try:
+            picam2.capture_file(filename, exif_data={"GPS": gps_tags})
+            return
+        except Exception as problem:
+            complain(f"saving without GPS tags: {problem!r}")
+    picam2.capture_file(filename)
+
+
+def write_sidecar(photo_path, now, measurement, gps=None):
     """Describe one photograph in JSON, beside the photograph."""
     information = {
         "camera": CAMERA_NAME,
@@ -311,6 +474,10 @@ def write_sidecar(photo_path, now, measurement):
 
         "boot": BOOT_ID,
         "uptime_s": measurement["uptime_s"],
+
+        # Where the camera is and whether its clock can be trusted, from
+        # the GPS dongle if one has visited.  See where_and_when().
+        **gps_blocks(gps, measurement["uptime_s"]),
 
         "image": {
             "file": os.path.basename(photo_path),
@@ -592,8 +759,10 @@ def main():
                 # last -- which are the ones where something is moving
                 # fastest.
                 filename = f"{day_directory}/{unused_name(day_directory, now)}.jpg"
-                picam2.capture_file(filename)      # from "main": the big one
-                write_sidecar(filename, now, measurement)
+                gps = where_and_when()
+                # From "main": the big one, with GPS tags if we have them.
+                capture_with_gps(picam2, filename, gps_exif(gps))
+                write_sidecar(filename, now, measurement, gps)
                 last_save_time = moment
                 save_times.append(moment)
                 print(f"kept {os.path.basename(filename)} -- "

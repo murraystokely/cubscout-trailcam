@@ -225,36 +225,44 @@ def fixes_from(lines):
         fields = line[1:line.index("*")].split(",")
         kind = fields[0][2:]                    # GPRMC, GNRMC -> RMC
 
-        if kind == "GSV" and len(fields) >= 4:
-            in_view = int(fields[3] or 0)
+        try:
+            fix = None
+            if kind == "GSV" and len(fields) >= 4:
+                in_view = int(fields[3] or 0)
+            elif kind == "RMC" and len(fields) >= 10:
+                rmc = {"clock": fields[1], "fields": fields,
+                       "pi_time": pi_time, "uptime_s": uptime_s}
+            elif kind == "GGA" and len(fields) >= 10 and rmc:
+                fix = combine(rmc, fields, in_view)
+                rmc = None
+        except (ValueError, IndexError):
+            rmc = None                  # a sentence we cannot read: skip it
+            continue
+        if fix:
+            yield fix
 
-        elif kind == "RMC" and len(fields) >= 10:
-            rmc = {"clock": fields[1], "fields": fields,
-                   "pi_time": pi_time, "uptime_s": uptime_s}
 
-        elif kind == "GGA" and len(fields) >= 10 and rmc:
-            if fields[1] != rmc["clock"]:
-                rmc = None                      # a different second; skip
-                continue
-            r = rmc["fields"]
-            utc = None
-            if r[1] and r[9]:
-                utc = datetime.strptime(r[9] + r[1].split(".")[0],
-                                        "%d%m%y%H%M%S").replace(
-                                            tzinfo=timezone.utc)
-            yield {
-                "utc": utc,
-                "valid": r[2] == "A",
-                "lat": to_degrees(r[3], r[4]),
-                "lon": to_degrees(r[5], r[6]),
-                "alt_m": float(fields[9]) if fields[9] else None,
-                "hdop": float(fields[8]) if fields[8] else None,
-                "satellites": int(fields[7] or 0),
-                "in_view": in_view,
-                "pi_time": rmc["pi_time"],
-                "uptime_s": rmc["uptime_s"],
-            }
-            rmc = None
+def combine(rmc, fields, in_view):
+    """One fix from a second's RMC and GGA; None if they do not match."""
+    if fields[1] != rmc["clock"]:
+        return None                     # a different second; skip it
+    r = rmc["fields"]
+    utc = None
+    if r[1] and r[9]:
+        utc = datetime.strptime(r[9] + r[1].split(".")[0],
+                                "%d%m%y%H%M%S").replace(tzinfo=timezone.utc)
+    return {
+        "utc": utc,
+        "valid": r[2] == "A",
+        "lat": to_degrees(r[3], r[4]),
+        "lon": to_degrees(r[5], r[6]),
+        "alt_m": float(fields[9]) if fields[9] else None,
+        "hdop": float(fields[8]) if fields[8] else None,
+        "satellites": int(fields[7] or 0),
+        "in_view": in_view,
+        "pi_time": rmc["pi_time"],
+        "uptime_s": rmc["uptime_s"],
+    }
 
 
 # ------------------------------------------------------------
@@ -316,6 +324,9 @@ def measure_and_set_clock(fix, may_set):
         print("could not set the clock: this needs CAP_SYS_TIME "
               "(see config/wildlife-gps.service)", flush=True)
         return offset_s, None
+    except OSError as problem:
+        print(f"could not set the clock: {problem}", flush=True)
+        return offset_s, None
 
     try:
         os.utime(TIMESYNC_CLOCK)
@@ -376,10 +387,12 @@ def load_state(state_file):
     try:
         with open(state_file) as f:
             state = json.load(f)
-        if state.get("boot") == BOOT_ID:
+        if (state.get("boot") == BOOT_ID
+                and isinstance(state.get("attachments"), list)
+                and isinstance(state.get("clock"), dict)):
             return state
-    except (OSError, ValueError):
-        pass
+    except Exception:
+        pass                    # missing, half-written or the wrong shape
     return {"camera": CAMERA_NAME, "boot": BOOT_ID, "receiver": None,
             "position": None,
             "clock": {"set_by_gps": False, "first_set_uptime_s": None,
@@ -425,6 +438,20 @@ def log_row(photo_dir, fix, offset_s, stepped_s, attachment):
         f.write(",".join(str(value) for value in row) + "\n")
         f.flush()
         os.fsync(f.fileno())
+
+
+complaints = set()
+
+
+def complain(message):
+    """Say a problem once in the journal, then keep going.
+
+    A camera with an unwritable folder should still get its clock set,
+    not crash and restart every few seconds.
+    """
+    if message not in complaints:
+        complaints.add(message)
+        print(message, flush=True)
 
 
 def status(text, status_file):
@@ -517,7 +544,10 @@ def run(device, state_dir, photo_dir, status_file, may_set_clock, lines=None):
             offset_s = round((fix["utc"] - datetime.fromtimestamp(
                 fix["pi_time"], timezone.utc)).total_seconds(), 3)
 
-        log_row(photo_dir, fix, offset_s, stepped_s, attachment)
+        try:
+            log_row(photo_dir, fix, offset_s, stepped_s, attachment)
+        except OSError as problem:
+            complain(f"could not write the log in {photo_dir}: {problem}")
         last_log = now
 
         if first:
@@ -561,7 +591,11 @@ def run(device, state_dir, photo_dir, status_file, may_set_clock, lines=None):
                       f"fix put the camera -- was it moved? Keeping the "
                       f"first position.", flush=True)
 
-        save_state(state, state_file)
+        try:
+            save_state(state, state_file)
+        except OSError as problem:
+            complain(f"could not write {state_file}: {problem} -- does "
+                     f"{state_dir} exist, owned by this user?")
 
     print("dongle out", flush=True)
     return 0
