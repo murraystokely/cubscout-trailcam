@@ -1,14 +1,10 @@
-"""Tests for the GPS part of step10_ai_camera.py and step10_camera_module.py.
+"""Tests for photo_gps.py, which the step 10 camera programs import.
 
     python3 -m unittest discover tests
 
-The camera programs cannot be imported on a laptop: they open the camera
-as soon as they start.  So these tests pull the GPS functions out of each
-file's source and run them with a fake camera and a fake OpenCV.  They
-also check the shared GPS code is the same in both files.
-
-The EXIF tests need piexif, which every camera has (Picamera2 uses it);
-they are skipped where it is missing.
+Standard library only; the EXIF tests also need piexif, which every
+camera has (Picamera2 uses it), and are skipped where it is missing.
+OpenCV and the camera are replaced by fakes.
 """
 
 import ast
@@ -28,9 +24,8 @@ except ImportError:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(HERE, "..")
-
-SHARED = ["GPS_FILE", "NETWORK_SYNCED", "gps_cache", "complaints",
-          "complain", "where_and_when", "gps_blocks", "gps_exif"]
+sys.path.insert(0, REPO)
+import photo_gps  # noqa: E402
 
 # An 8x8 JPEG, as cv2.imencode makes it.
 TINY_JPEG = base64.b64decode(
@@ -47,32 +42,6 @@ TINY_JPEG = base64.b64decode(
     "hYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk"
     "5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDzn9on/mX/APt4/wDaVFFFePkH/Ivp/P8A"
     "9KZ6ud/79U+X5I//2Q==")
-
-
-def definitions(filename, names):
-    """The top-level assignments and functions with these names, as AST."""
-    with open(os.path.join(REPO, filename)) as f:
-        tree = ast.parse(f.read())
-    found = {}
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in names:
-            found[node.name] = node
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in names:
-                    found[target.id] = node
-    missing = set(names) - set(found)
-    if missing:
-        raise AssertionError(f"{filename} is missing {sorted(missing)}")
-    return found
-
-
-def load(filename, extra, namespace):
-    """Run just the GPS code from one camera program, in namespace."""
-    nodes = definitions(filename, SHARED + extra)
-    module = ast.Module(body=list(nodes.values()), type_ignores=[])
-    exec(compile(module, filename, "exec"), namespace)
-    return namespace
 
 
 class FakeArray:
@@ -134,45 +103,92 @@ def decimal(dms, ref):
     return -value if ref in (b"S", b"W", "S", "W") else value
 
 
-class BothFiles(unittest.TestCase):
+class CameraPrograms(unittest.TestCase):
+    """If photo_gps.py is missing, each program defines stand-ins.
 
-    def test_shared_gps_code_is_identical(self):
-        ai = definitions("step10_ai_camera.py", SHARED)
-        plain = definitions("step10_camera_module.py", SHARED)
-        for name in SHARED:
-            self.assertEqual(ast.dump(ai[name]), ast.dump(plain[name]),
-                             f"{name} differs between the two programs")
+    Every name a program imports from photo_gps must have a stand-in in
+    its except branch, or a camera without photo_gps.py would crash at
+    its first photograph instead of saving it without GPS.
+    """
+
+    def check(self, filename):
+        with open(os.path.join(REPO, filename)) as f:
+            tree = ast.parse(f.read())
+        for node in tree.body:
+            if (isinstance(node, ast.Try) and node.body
+                    and isinstance(node.body[0], ast.ImportFrom)
+                    and node.body[0].module == "photo_gps"):
+                imported = {alias.name for alias in node.body[0].names}
+                stand_ins = {n.name for handler in node.handlers
+                             for n in handler.body
+                             if isinstance(n, ast.FunctionDef)}
+                self.assertEqual(imported, stand_ins, filename)
+                for name in imported:
+                    self.assertTrue(hasattr(photo_gps, name), name)
+                return
+        self.fail(f"{filename} does not import photo_gps")
+
+    def test_ai_camera(self):
+        self.check("step10_ai_camera.py")
+
+    def test_camera_module(self):
+        self.check("step10_camera_module.py")
 
 
 class Base(unittest.TestCase):
-    FILE = "step10_camera_module.py"
-    EXTRA = ["capture_with_gps"]
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = self.tmp.name
-        self.ns = load(self.FILE, self.EXTRA, {
-            "os": os, "json": json, "io": io, "piexif": piexif,
-            "BOOT_ID": "thisboot", "JPEG_QUALITY": 90})
-        self.ns["GPS_FILE"] = os.path.join(self.dir, "gps.json")
-        self.ns["NETWORK_SYNCED"] = os.path.join(self.dir, "synchronized")
+        self.saved = {name: getattr(photo_gps, name) for name in
+                      ("GPS_FILE", "NETWORK_SYNCED", "piexif", "onto_the_card")}
+        photo_gps.GPS_FILE = os.path.join(self.dir, "gps.json")
+        photo_gps.NETWORK_SYNCED = os.path.join(self.dir, "synchronized")
+        photo_gps.gps_cache.update(stamp=None, gps=None)
+        photo_gps.complaints.clear()
+        self.saved_cv2 = sys.modules.get("cv2")
 
     def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(photo_gps, name, value)
+        if self.saved_cv2 is None:
+            sys.modules.pop("cv2", None)
+        else:
+            sys.modules["cv2"] = self.saved_cv2
         self.tmp.cleanup()
 
     def write_state(self, state):
-        temporary = self.ns["GPS_FILE"] + ".tmp"
+        temporary = photo_gps.GPS_FILE + ".tmp"
         with open(temporary, "w") as f:
             if isinstance(state, str):
                 f.write(state)
             else:
                 json.dump(state, f)
-        os.replace(temporary, self.ns["GPS_FILE"])   # as wildlife_gps.py does
+        os.replace(temporary, photo_gps.GPS_FILE)   # as wildlife_gps.py does
 
     def read(self):
         with redirect_stdout(io.StringIO()) as out:
-            gps = self.ns["where_and_when"]()
+            gps = photo_gps.where_and_when("thisboot")
         return gps, out.getvalue()
+
+
+class OntoTheCard(Base):
+
+    def test_open_file_path_and_folder(self):
+        path = os.path.join(self.dir, "photo.jpg")
+        with open(path, "wb") as f:
+            f.write(b"bytes")
+            photo_gps.onto_the_card(f)
+        photo_gps.onto_the_card(path)
+        photo_gps.onto_the_card(self.dir)
+        self.assertEqual(photo_gps.complaints, set())
+
+    def test_failure_is_said_once_and_never_raised(self):
+        missing = os.path.join(self.dir, "gone.jpg")
+        with redirect_stdout(io.StringIO()) as out:
+            photo_gps.onto_the_card(missing)
+            photo_gps.onto_the_card(missing)
+        self.assertEqual(out.getvalue().count("could not push"), 1)
 
 
 class WhereAndWhen(Base):
@@ -195,7 +211,7 @@ class WhereAndWhen(Base):
         gps, out = self.read()
         self.assertIsNone(gps)
         self.assertIn("ignoring", out)
-        self.ns["gps_cache"]["stamp"] = None       # force a re-read
+        photo_gps.gps_cache["stamp"] = None       # force a re-read
         _, out = self.read()
         self.assertEqual(out, "")                  # not said twice
 
@@ -222,7 +238,7 @@ class WhereAndWhen(Base):
     def test_file_removed(self):
         self.write_state(a_fix())
         self.read()
-        os.remove(self.ns["GPS_FILE"])
+        os.remove(photo_gps.GPS_FILE)
         self.assertIsNone(self.read()[0])
 
 
@@ -230,14 +246,14 @@ class Sidecar(Base):
 
     def blocks(self, gps, uptime_s):
         with redirect_stdout(io.StringIO()):
-            return self.ns["gps_blocks"](gps, uptime_s)
+            return photo_gps.gps_blocks(gps, uptime_s)
 
     def test_no_gps_saved_clock(self):
         self.assertEqual(self.blocks(None, 100.0),
                          {"clock": {"source": "saved"}})
 
     def test_network(self):
-        open(self.ns["NETWORK_SYNCED"], "w").close()
+        open(photo_gps.NETWORK_SYNCED, "w").close()
         self.assertEqual(self.blocks(None, 100.0)["clock"]["source"],
                          "network")
 
@@ -267,7 +283,7 @@ class Sidecar(Base):
         gps, _ = self.read()
         self.assertEqual(self.blocks(gps, 100.0),
                          {"clock": {"source": "saved"}})
-        self.assertIsNone(self.ns["gps_exif"](gps))
+        self.assertIsNone(photo_gps.gps_exif(gps))
 
     def test_unknown_uptime(self):
         blocks = self.blocks(dict(a_fix(), this_boot=True), None)
@@ -287,14 +303,14 @@ class Exif(Base):
 
     def tags(self, gps):
         with redirect_stdout(io.StringIO()):
-            return self.ns["gps_exif"](gps)
+            return photo_gps.gps_exif(gps)
 
     def test_only_this_boot(self):
         self.assertIsNone(self.tags(None))
         self.assertIsNone(self.tags(dict(a_fix(boot="old"), this_boot=False)))
 
     def test_without_piexif(self):
-        self.ns["piexif"] = None
+        photo_gps.piexif = None
         self.assertIsNone(self.tags(dict(a_fix(), this_boot=True)))
 
     def test_round_trip(self):
@@ -339,12 +355,12 @@ class CameraModuleCapture(Base):
     def capture(self, camera, tags):
         filename = os.path.join(self.dir, "photo.jpg")
         with redirect_stdout(io.StringIO()) as out:
-            self.ns["capture_with_gps"](camera, filename, tags)
+            photo_gps.capture_with_gps(camera, filename, tags)
         return filename, out.getvalue()
 
     def test_tags_go_to_exif_data(self):
         camera = FakePicamera2()
-        tags = self.ns["gps_exif"](dict(a_fix(), this_boot=True))
+        tags = photo_gps.gps_exif(dict(a_fix(), this_boot=True))
         self.capture(camera, tags)
         self.assertEqual(camera.calls, [{"exif_data": {"GPS": tags}}])
 
@@ -355,7 +371,7 @@ class CameraModuleCapture(Base):
 
     def test_old_picamera2_falls_back(self):
         camera = FakePicamera2(knows_exif_data=False)
-        tags = self.ns["gps_exif"](dict(a_fix(), this_boot=True))
+        tags = photo_gps.gps_exif(dict(a_fix(), this_boot=True))
         filename, out = self.capture(camera, tags)
         self.assertEqual(camera.calls, [{}])
         self.assertTrue(os.path.exists(filename))
@@ -363,7 +379,7 @@ class CameraModuleCapture(Base):
 
     def test_picamera2_merge_and_splice(self):
         """Our tags through the same steps Picamera2 0.3.37 takes."""
-        tags = self.ns["gps_exif"](dict(a_fix(), this_boot=True))
+        tags = photo_gps.gps_exif(dict(a_fix(), this_boot=True))
         theirs = {"0th": {piexif.ImageIFD.Make: "Raspberry Pi"},
                   "Exif": {piexif.ExifIFD.ISOSpeedRatings: 100}}
         exif = piexif.dump(theirs | {"GPS": tags})
@@ -376,19 +392,30 @@ class CameraModuleCapture(Base):
 
 @unittest.skipIf(piexif is None, "piexif not installed (every camera has it)")
 class AiCameraWrite(Base):
-    FILE = "step10_ai_camera.py"
-    EXTRA = ["write_jpeg"]
 
     def write(self, cv2, tags):
-        self.ns["cv2"] = cv2
+        sys.modules["cv2"] = cv2              # write_jpeg imports cv2 itself
         filename = os.path.join(self.dir, "photo.jpg")
         with redirect_stdout(io.StringIO()) as out:
-            self.ns["write_jpeg"](filename, object(), tags)
+            photo_gps.write_jpeg(filename, object(), tags, 90)
         return filename, out.getvalue()
+
+    def pushed(self):
+        calls = []
+        photo_gps.onto_the_card = lambda target: calls.append(
+            getattr(target, "name", target))
+        return calls
+
+    def test_both_paths_push_the_photo_onto_the_card(self):
+        tags = photo_gps.gps_exif(dict(a_fix(), this_boot=True))
+        for given in (tags, None):
+            calls = self.pushed()
+            filename, _ = self.write(FakeCv2(), given)
+            self.assertEqual(calls, [filename])
 
     def test_tags_in_the_file_written_once(self):
         cv2 = FakeCv2()
-        tags = self.ns["gps_exif"](dict(a_fix(), this_boot=True))
+        tags = photo_gps.gps_exif(dict(a_fix(), this_boot=True))
         filename, _ = self.write(cv2, tags)
         self.assertEqual(cv2.imwrites, [])          # did not use imwrite
         with open(filename, "rb") as f:
@@ -405,7 +432,7 @@ class AiCameraWrite(Base):
 
     def test_encode_failure_falls_back(self):
         cv2 = FakeCv2(encode_ok=False)
-        tags = self.ns["gps_exif"](dict(a_fix(), this_boot=True))
+        tags = photo_gps.gps_exif(dict(a_fix(), this_boot=True))
         self.write(cv2, tags)
         self.assertEqual(len(cv2.imwrites), 1)
 

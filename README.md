@@ -406,7 +406,7 @@ this way is in [`docs/gps-design.md`](docs/gps-design.md).
 Install it once per camera, from a copy of this repository on the Pi:
 
 ``` bash
-cp wildlife_gps.py final_motion_capture.py \
+cp wildlife_gps.py photo_gps.py final_motion_capture.py \
    step10_ai_camera.py step10_camera_module.py /home/webelos/
 sudo install -d -o webelos -g webelos /var/lib/wildlifecam
 sudo install -m 644 config/90-wildlife-gps.rules /etc/udev/rules.d/
