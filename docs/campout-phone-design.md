@@ -9,9 +9,11 @@ own, and adds a record of where every camera was put.
 At setup the phone runs a Wi-Fi hotspot called `webelos` and the
 **Campout** app. A camera within range joins the hotspot, asks the app for
 the time, and sets its clock. Standing at the camera, you tap "Place
-wildlifecam11 here"; the app saves the phone's GPS position, and the
-camera fetches it as its own location. At takedown the same visit measures
-how far the camera's clock drifted, and the app shows it.
+wildlifecam11 here"; the app saves the phone's GPS position and sends it
+to the camera, which keeps it as its own location and says so on the
+phone straight away. When you come back near the camera with the phone at
+the end of the deployment, it rejoins the hotspot and measures how far its
+clock drifted, and the app shows that too.
 
 ---
 
@@ -48,16 +50,24 @@ Two things learned along the way carry over:
 ```
  Android phone                                   camera (Pi Zero 2 W)
  ----------------------------------------        ------------------------------
- hotspot "webelos", 2.4 GHz (turned on            joins "webelos"
-   in Settings by hand)                           wildlife_gps.py, phone mode:
- Campout app                                        finds the phone at its
-   foreground service: HTTP on port 8123  <-----    default gateway
-     GET  /now                                      measures its clock, sets it
-     GET  /placement/<camera>                       fetches its placement
-     POST /checkin                                  writes gps.json, logs it
+ hotspot "webelos", 2.4 GHz (turned on            joins "webelos": the phone
+   in Settings by hand)                           service starts, and runs until
+                                                  the camera leaves the hotspot
+ Campout app, port 8123
+   GET  /now         <-------------------------- asks the time, once per joining:
+   POST /checkin     <--------------------------   measure, set, gps.json, log
+                                                 listens on port 8124
+   "Place here"      --------------------------> POST /placement: keeps it in
+                     <--- "saved" / error -------  gps.json, answers at once
    screens: Cameras, Place, Placements           step 10 programs copy gps.json
                                                     into every photograph, as now
 ```
+
+**The time is pulled; the placement is pushed.** The camera has to ask
+for the time itself, because only it can time the request's round trip
+and so work out where in that gap the phone's answer belongs. The
+placement is pushed, because you decide when it happens, by tapping, and
+the camera's answer tells you on the spot whether it worked.
 
 ## What an Android app can and cannot do here
 
@@ -90,8 +100,8 @@ service (below).
 - A check that the hotspot is on, with a button to open its settings.
 - **Every camera that has checked in**, newest first:
   `wildlifecam11 — clock was 7.7 days slow, set ✓ — placed ✓ — 2 min ago`.
-  This is how you know a camera is done before walking on. At takedown
-  the same row says `clock had drifted 48 s fast`.
+  This is how you know a camera is done before walking on. When you
+  come back near it at the end of a deployment, the same row says `clock had drifted 48 s fast`.
 - **The phone's own clock against GPS**, from the last fix: "phone clock
   within 0.2 s of GPS". The phone is the cameras' time source, so it is
   worth seeing that it is right.
@@ -103,13 +113,20 @@ service (below).
   improves. **"Place here" turns on at 10 m or better.**
 - An optional note ("oak by the creek, facing the trail") and,
   optionally, a photo of the camera in place.
-- Placing the same camera again replaces its placement, and the old one is
-  kept in the history.
+- **The tap saves the placement on the phone first**, so the second
+  record exists whatever happens next, **then sends it to the camera**,
+  and shows the camera's answer on the spot: "wildlifecam11 saved it ✓",
+  or "couldn't reach wildlifecam11 ✗" (step closer, wait for it to
+  check in, tap again).
+- Only cameras that have checked in can be placed, since that is how the
+  app knows their address.
+- Placing the same camera again replaces its placement, on the phone and
+  on the camera, and the old one is kept in the history.
 
 **Placements**
 
 - Every placement: camera, time, position, accuracy, note, and whether the
-  camera has fetched it.
+  camera confirmed it.
 - **Export** as a CSV file to the phone's Documents folder, or share it.
   That file is the second record.
 
@@ -121,6 +138,7 @@ service (below).
 | HTTP server | A small embedded server inside a foreground service: NanoHTTPD, or Ktor's CIO engine. Port 8123 on every interface, so the hotspot can reach it. Android does not let apps use ports below 1024, which rules out the real NTP port (123); that is why the cameras ask over HTTP rather than using `timesyncd`. |
 | Location | The fused location provider (Google Play services), high-accuracy, only while the Place screen is open. It works offline, from the satellites alone. |
 | Time | The phone's clock, `System.currentTimeMillis()`, read as late as possible when answering `/now`. |
+| Sending placements | An HTTP client (OkHttp, or Ktor's client) posting to the camera. Android refuses plain `http://` by default, so a network security configuration allows it for the hotspot's local addresses; nothing else in the app needs it. |
 | Storage | Placements and check-ins in a small Room database. |
 | Source code | In this repository, under `android/`. Exported placements stay on the phone; coordinates of where cameras were left do not go in the repository. |
 
@@ -158,7 +176,9 @@ so getting a GPS fix is the simple case.
 ## The API between app and camera
 
 Two programs, written separately, so the contract is spelled out here.
-Everything is JSON over HTTP on port 8123, at the phone's hotspot address.
+Everything is JSON over HTTP.
+
+### On the phone, port 8123, at the hotspot's address
 
 **`GET /now`**
 
@@ -168,7 +188,22 @@ Everything is JSON over HTTP on port 8123, at the phone's hotspot address.
 
 The phone's clock in seconds since 1970, UTC, read as late as possible.
 
-**`GET /placement/wildlifecam11`** --- 404 until that camera is placed, then:
+**`POST /checkin`**
+
+```json
+{"camera": "wildlifecam11", "boot": "f6fe6741", "uptime_s": 412.6,
+ "offset_s": 663010.803, "stepped": true, "network_synced": false,
+ "listening": 8124, "code": "17e2c53ba105"}
+```
+
+What the camera did: how wrong its clock was (phone minus camera, before
+any change), whether it set it, and the port it is listening on for a
+placement. The app answers `{"ok": true}` and records the camera's address
+from the connection.
+
+### On the camera, port 8124, while it is on the hotspot
+
+**`POST /placement`**
 
 ```json
 {"camera": "wildlifecam11", "lat": 37.33333, "lon": -121.70000,
@@ -176,18 +211,15 @@ The phone's clock in seconds since 1970, UTC, read as late as possible.
  "note": "oak by the creek"}
 ```
 
-**`POST /checkin`**
+The camera answers `{"ok": true}` once the placement is safely in
+`gps.json`, or `{"ok": false, "error": "..."}` with an HTTP error status.
+It refuses a placement:
 
-```json
-{"camera": "wildlifecam11", "boot": "f6fe6741", "uptime_s": 412.6,
- "offset_s": 663010.803, "stepped": true, "network_synced": false,
- "placement": true, "code": "17e2c53ba105"}
-```
-
-What the camera did: how wrong its clock was (phone minus camera, before
-any change), whether it set it, and whether it has its placement. The app
-answers `{"ok": true}` and records the camera's address from the
-connection.
+- from any address other than its default gateway, the phone. Anyone on
+  the hotspot could otherwise send one;
+- for a camera name that is not its own hostname;
+- that is not a valid position: a latitude and longitude in range, and a
+  body of a few hundred bytes at most.
 
 ## The camera side: the phone as a second source
 
@@ -195,10 +227,23 @@ The camera already knows how to measure its clock, set it and keep the
 records (`wildlife_gps.py`, from the dongle work). The phone becomes a
 second source of the same facts:
 
-- **Started by joining `webelos`.** A NetworkManager dispatcher script
-  starts `wildlife-phone.service` when the `webelos` connection comes up,
-  and it stops when the connection goes down, the way the dongle's udev
-  rule starts and stops the dongle service.
+- **Started by joining `webelos`, stopped by leaving it.** NetworkManager
+  runs every script in `/etc/NetworkManager/dispatcher.d/` when a
+  connection changes, with the connection's name and the event. Ours
+  starts `wildlife-phone.service` on `up` for `webelos` and stops it on
+  `down`, the way the dongle's udev rule starts and stops the dongle
+  service. When the camera is not on `webelos`, none of this runs and no
+  port is open.
+
+  ```bash
+  # /etc/NetworkManager/dispatcher.d/90-webelos-phone
+  if [ "$CONNECTION_ID" = "webelos" ]; then
+      case "$2" in
+          up)   systemctl start --no-block wildlife-phone.service ;;
+          down) systemctl stop  --no-block wildlife-phone.service ;;
+      esac
+  fi
+  ```
 - **The phone is found at the default gateway**, the hotspot's own
   address. Android chooses that address itself, and newer versions change
   it, so nothing is written into the camera.
@@ -211,18 +256,36 @@ second source of the same facts:
   ten seconds of fix.
 - **Then exactly what the dongle does:** measure first; set the clock if it
   is out by more than a second, unless a time server already has it;
-  write `gps.json`; append a row to the per-boot log. Setup-and-takedown
-  drift correction then works the same whichever source took the
-  measurement. Each attachment in `gps.json` and each log row records
-  `"source": "phone"` or `"dongle"`.
-- **The placement.** The camera asks for `/placement/<its hostname>` every
-  few seconds while connected. When you tap "Place here" at the camera, it
-  gets that position and records it as its own: the `position` block of
-  `gps.json`, which the step 10 programs copy into every photograph. It is
-  still "this camera, this boot", and it is **never** wherever the phone
-  happens to be: you made it this camera's position by standing there and
-  choosing it.
-- **The check-in** tells the app what happened, after each measurement.
+  write `gps.json`; append a row to the per-boot log; check in. Each
+  attachment in `gps.json` and each log row records `"source": "phone"`
+  or `"dongle"`.
+- **Once per joining.** The time is measured once each time the camera
+  joins the hotspot, not again while it stays connected. A camera at the
+  edge of range can drop off and rejoin over and over, so a measurement
+  within 10 minutes of the last one, in the same boot, is skipped.
+- **Then it listens for a placement** on port 8124, for as long as it
+  stays on the hotspot: before you reach it, while you stand there, or
+  after. An idle listening socket costs nothing. A placement it accepts
+  goes into the `position` block of `gps.json`, which the step 10
+  programs copy into every photograph. It is "this camera, this boot",
+  and it is **never** wherever the phone happens to be: you made it this
+  camera's position by standing there and choosing it.
+
+### The end of a deployment
+
+**The camera cannot know it is being taken down.** It only knows when it
+hears the hotspot and joins. So the drift measurement happens when you
+walk near it at the end of a deployment with the hotspot on: it rejoins,
+measures how far its clock has drifted since it was set, logs it, and
+checks in. The app's row then says `clock had drifted 48 s fast`. That is
+the second measurement the drift correction needs (gps-design.md,
+"Correcting the time").
+
+- **Wait for that row before unplugging**, when it matters. Joining can
+  take a minute or two.
+- **When it does not matter, just unplug.** A Pi's clock drifts a second
+  or two a day, so over a weekend it is a few seconds off. Over a week to
+  a month it can reach a minute, and the wait is worth it.
 
 `photo_gps.py` and the step 10 programs do not change.
 
@@ -249,15 +312,17 @@ service.
 - **The phone's clock.** Android keeps it right from the mobile network,
   and with no signal for a weekend it drifts by well under a second a day.
   The Cameras screen shows how it compares with GPS.
-- **Placing a camera you are not standing at.** The Place screen says
-  which camera, and shows the accuracy. Tap at the camera, not on the way
-  to it. Each placement keeps its time, so a mistake can be spotted and
-  redone.
+- **Placing a camera you are not standing at.** The camera will accept a
+  placement whenever it is on the hotspot, including before you reach it.
+  The Place screen says which camera, and shows the accuracy. Tap at the
+  camera, not on the way to it. Each placement keeps its time, so a
+  mistake can be spotted and redone.
 - **The laptop at camp.** It can join the hotspot too, and
   `sync_cameras.py` may find nearby cameras by mDNS. Whether an Android
   hotspot passes multicast between devices needs testing.
-- **Anyone on the hotspot can use the API.** The hotspot password is the
-  protection, as it is for the cameras' web pages.
+- **Anyone on the hotspot can reach the app's API.** The hotspot password
+  is the protection, as it is for the cameras' web pages. The camera's
+  placement listener is stricter: it only accepts from the phone.
 
 ## Order of work
 
@@ -269,18 +334,18 @@ service.
      phone still, 30 minutes**, and reach it again.
 2. **One camera** with the `webelos` profile: it joins, and
    `curl http://<gateway>:8123/now` works from it.
-3. **A fake app in Python** (a few lines of `http.server`, implementing the
-   API above), so the camera side can be built and tested without the
-   phone.
+3. **A fake app in Python** (a few lines of `http.server` for `/now` and
+   `/checkin`, plus a script that posts a placement), so the camera side
+   can be built and tested without the phone.
 4. **The camera side:** the phone source in `wildlife_gps.py`, the
    dispatcher script and `wildlife-phone.service`, tested against the
    fake.
 5. **The app:** the service and server first, then Cameras, Place,
    Placements and export.
-6. **A field test:** set up two cameras with the phone, leave them, take
-   them down. The placements on the phone should match the cameras'
-   `gps.json`, and the drift should show on the Cameras screen and in the
-   logs.
+6. **A field test:** set up two cameras with the phone and place them,
+   leave them, then walk back near them with the phone. The placements on
+   the phone should match the cameras' `gps.json`, and the drift should
+   show on the Cameras screen and in the logs.
 7. **The master images and cards:** the Wi-Fi profile, dispatcher script
    and service.
 
@@ -293,4 +358,5 @@ service.
 - **Finding cameras that have not checked in.** The app may scan its
   hotspot's addresses and ask each camera's web page to identify itself,
   as `sync_cameras.py --scan` does, or use Android's mDNS discovery
-  (`NsdManager`). The check-in is enough to start with.
+  (`NsdManager`). The check-in is enough to start with: a camera that has
+  not checked in has not measured its clock yet either.
