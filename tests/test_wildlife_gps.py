@@ -95,6 +95,14 @@ class ReadingSentences(unittest.TestCase):
         fixes = list(wildlife_gps.fixes_from(seconds(1)))
         self.assertIsNone(fixes[0]["in_view"])
 
+    def test_odd_field_with_good_checksum_is_skipped(self):
+        lines = seconds(3)
+        odd = sentence("GPGGA,160200.00,3720.00000,N,12142.00000,W,1,07x,1.2,"
+                       "412.3,M,-30.1,M,,")
+        lines[1] = (odd, lines[1][1], lines[1][2])
+        fixes = list(wildlife_gps.fixes_from(lines))
+        self.assertEqual(len(fixes), 2)         # second 0 skipped, no crash
+
     def test_garbled_line_is_dropped(self):
         lines = seconds(2)
         line, pi_time, uptime = lines[0]
@@ -199,6 +207,23 @@ class OneAttachment(unittest.TestCase):
         state = self.state()
         self.assertEqual(state["boot"], "nextboot")
         self.assertEqual(len(state["attachments"]), 1)
+
+    def test_unwritable_folders_do_not_stop_it(self):
+        blocked = os.path.join(self.dir, "not-a-folder")
+        open(blocked, "w").close()                 # a file where a folder goes
+        with redirect_stdout(io.StringIO()) as out:
+            result = wildlife_gps.run("/dev/null-gps", blocked, blocked, "",
+                                      may_set_clock=False,
+                                      lines=seconds(10 + 130))
+        self.assertEqual(result, 0)
+        self.assertIn("could not write", out.getvalue())
+        self.assertEqual(out.getvalue().count("could not write the log"), 1)
+
+    def test_wrong_shape_state_starts_fresh(self):
+        with open(os.path.join(self.dir, "gps.json"), "w") as f:
+            json.dump({"boot": "testboot", "attachments": "oops"}, f)
+        self.run_with(seconds(12))
+        self.assertEqual(len(self.state()["attachments"]), 1)
 
     def test_a_row_a_minute(self):
         self.run_with(seconds(10 + 130))
