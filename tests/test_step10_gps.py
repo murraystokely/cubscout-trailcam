@@ -245,24 +245,29 @@ class Sidecar(Base):
         blocks = self.blocks(dict(a_fix(), this_boot=True), 100.0)
         self.assertEqual(blocks["clock"], {"source": "gps",
                                            "set_uptime_s": 87.0})
-        self.assertEqual(blocks["gps"]["fix"], "this boot")
+        self.assertEqual(blocks["gps"]["boot"], "thisboot")
         self.assertAlmostEqual(blocks["gps"]["lat"], 37.333333)
 
     def test_photograph_before_the_clock_was_set(self):
         blocks = self.blocks(dict(a_fix(), this_boot=True), 50.0)
         self.assertEqual(blocks["clock"]["source"], "saved")
-        self.assertEqual(blocks["gps"]["fix"], "this boot")
+        self.assertIn("gps", blocks)        # where it is, even before the clock
 
     def test_gps_never_set_the_clock(self):
         blocks = self.blocks(dict(a_fix(first_set=None), this_boot=True), 99.0)
         self.assertEqual(blocks["clock"]["source"], "saved")
 
-    def test_earlier_boot(self):
+    def test_earlier_boot_is_not_used(self):
         blocks = self.blocks(dict(a_fix(boot="oldboot"), this_boot=False),
                              100.0)
-        self.assertEqual(blocks["gps"]["fix"], "earlier boot")
-        self.assertEqual(blocks["gps"]["boot"], "oldboot")
-        self.assertEqual(blocks["clock"]["source"], "saved")
+        self.assertEqual(blocks, {"clock": {"source": "saved"}})
+
+    def test_cloned_card_ignores_the_masters_fix(self):
+        self.write_state(a_fix(boot="masterboot"))
+        gps, _ = self.read()
+        self.assertEqual(self.blocks(gps, 100.0),
+                         {"clock": {"source": "saved"}})
+        self.assertIsNone(self.ns["gps_exif"](gps))
 
     def test_unknown_uptime(self):
         blocks = self.blocks(dict(a_fix(), this_boot=True), None)

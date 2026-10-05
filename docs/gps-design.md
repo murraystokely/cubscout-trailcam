@@ -242,8 +242,8 @@ lost mid-attachment (someone's hand over the dongle, the tree canopy), it
 stops writing and waits for another 10 seconds in a row before it starts.
 
 A `gps.json` left over from an earlier boot is left alone until this boot's
-first trusted fix replaces it. The camera programs already treat it as
-"earlier boot" (below), so a stale file is never mistaken for a new one.
+first trusted fix replaces it. The camera programs ignore it (below), so a
+stale file is never mistaken for a new one.
 
 The camera programs check too: `where_and_when()` ignores a `gps.json`
 without a `position` block or with an unparseable one. Two checks for the
@@ -556,18 +556,22 @@ have; if it happens with the dongle attached, the log shows the position
 jumping, and a later attachment that lands somewhere else is caught as
 described under "Where the location lives".)
 
-So three cases:
+So the rule is one line: **a fix is used only if it is from this boot.**
 
 | `gps.json` | Sidecar | EXIF |
 |---|---|---|
-| Same boot | `gps` block, `"fix": "this boot"` | GPS tags written |
-| Earlier boot | `gps` block, `"fix": "earlier boot"`, with that boot's id | **Nothing** |
-| Missing | No `gps` block | Nothing |
+| Same boot | `gps` block | GPS tags written |
+| Earlier boot | nothing | nothing |
+| Missing | nothing | nothing |
 
-An earlier boot's fix is recorded in the sidecar because it is often right
---- a battery swap on the same post --- and the laptop can confirm it
-against `deployments.csv`. It is kept out of the EXIF because EXIF has no
-way to say "probably", and any photo tool will display it as fact.
+An earlier boot's fix is often right --- a battery swap on the same post ---
+but not always: a card cloned from another camera carries that camera's
+file. So the camera programs never use it. A battery swap is covered by
+plugging the dongle in at the swap, or on the laptop by `deployments.csv`.
+A sidecar's `gps` block therefore always means "this camera, this boot",
+and nothing that reads it needs to know otherwise. (The decision to keep
+earlier-boot fixes out of the sidecar was made 2026-10-04, before
+deploying.)
 
 ## What goes into each photograph
 
@@ -577,7 +581,6 @@ Two new blocks beside `boot` and `uptime_s`:
 
 ```json
 "gps": {
-  "fix": "this boot",
   "boot": "91b8124e",
   "lat": 37.33333,
   "lon": -121.70000,
@@ -870,12 +873,13 @@ and there is nothing hidden.
   start-and-end, start only, end only, a step in the middle, and rows
   marked `network_synced`.
 - **The reader and the three cases** --- same boot, earlier boot, missing ---
-  plus a `gps.json` with no position, with hand-written files.
+  plus a `gps.json` with no position and one from a cloned card's master,
+  with hand-written files.
 - **On a camera:** `exiftool -gps:all -DateTimeOriginal <photo>.jpg`, and
   `journalctl -u wildlife-gps` for the line saying how far the clock moved.
 - **Unplug mid-run** and check photographs keep their position for the rest
-  of the boot; **reboot without the dongle** and check they go to
-  `"earlier boot"` with no EXIF.
+  of the boot; **reboot without the dongle** and check they have no `gps`
+  block and no EXIF.
 
 ## Order of work
 

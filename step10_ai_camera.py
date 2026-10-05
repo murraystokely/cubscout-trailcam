@@ -219,6 +219,10 @@ def where_and_when():
 def gps_blocks(gps, uptime_s):
     """The "gps" and "clock" blocks for a photograph's sidecar.
 
+    The "gps" block is only ever for a fix from THIS boot.  A file left by
+    an earlier boot -- a battery swap, or a card cloned from another
+    camera -- says nothing about where this run's photographs were taken.
+
     clock.source answers "can I trust this photograph's time?":
         gps      GPS set the clock this boot, before this photograph
         network  a time server set it (systemd-timesyncd says so)
@@ -229,10 +233,9 @@ def gps_blocks(gps, uptime_s):
     try:
         if os.path.exists(NETWORK_SYNCED):
             clock = {"source": "network"}
-        if gps:
+        if gps and gps["this_boot"]:
             position = gps["position"]
             blocks["gps"] = {
-                "fix": "this boot" if gps["this_boot"] else "earlier boot",
                 "boot": gps.get("boot"),
                 "lat": float(position["lat"]),
                 "lon": float(position["lon"]),
@@ -241,7 +244,7 @@ def gps_blocks(gps, uptime_s):
                 "samples": position.get("samples"),
             }
             set_at = (gps.get("clock") or {}).get("first_set_uptime_s")
-            if (gps["this_boot"] and set_at is not None
+            if (set_at is not None
                     and uptime_s is not None and uptime_s >= set_at):
                 clock = {"source": "gps", "set_uptime_s": set_at}
     except Exception as problem:
@@ -253,9 +256,7 @@ def gps_blocks(gps, uptime_s):
 def gps_exif(gps):
     """GPS tags for the JPEG, as a piexif "GPS" block, or None.
 
-    Only for a fix from THIS boot.  A fix from an earlier boot is probably
-    right (a battery swap on the same post), but EXIF has no way to say
-    "probably", and every photo viewer would show it as fact.
+    Only for a fix from THIS boot, like the sidecar's "gps" block.
     """
     if piexif is None or not gps or not gps.get("this_boot"):
         return None
