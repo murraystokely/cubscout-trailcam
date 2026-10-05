@@ -146,12 +146,55 @@ go in a drop-in file that NetworkManager's dnsmasq reads:
 ```
 # /etc/NetworkManager/dnsmasq-shared.d/webelos.conf
 dhcp-option=option:ntp-server,10.42.0.1   # DHCP option 42: the time server
-domain=camp                               # wildlifecam11.camp resolves
+domain=internal                           # names are <hostname>.internal
+local=/internal/                          # answer them here, never forward
+expand-hosts                              # the base's own name too
+dhcp-host=wildlifecam10,10.42.0.110       # optional: same address every time
 ```
 
-Every camera that gets an address also gets a DNS name from its hostname,
-`wildlifecam11.camp`, and mDNS (`wildlifecam11.local`) keeps working as
-well.
+### Names for the cameras: DNS, not only mDNS
+
+At home we find cameras by mDNS: `wildlifecam10.local`. It works most of
+the time, but it is multicast --- a question shouted to everyone and
+answered by whoever owns the name --- and Wi-Fi is bad at multicast:
+access points send it at the slowest rate with no retries, and a Pi Zero
+in Wi-Fi power-save can sleep through the question. macOS and Linux also
+resolve `.local` differently, which is why `sync_cameras.py` carries its
+own `mdns_query()` fallback.
+
+On the `webelos` network the base station is both the DHCP server and
+the DNS server, so it can do better:
+
+1. A camera joining the network sends its hostname in its DHCP request
+   (NetworkManager does by default).
+2. dnsmasq gives it an address and remembers which name has it.
+3. The same reply tells the camera, and the laptop, "your DNS server is
+   10.42.0.1, and your search domain is `internal`".
+4. Looking up `wildlifecam10.internal`, or plain `wildlifecam10` through
+   the search domain, is then an ordinary DNS question to one known
+   server, retried if lost, answered from the list of addresses it just
+   handed out.
+
+mDNS keeps working alongside, as a fallback.
+
+**Which name.** On a network with no internet any suffix would answer,
+but the laptop is often on two networks at once, and a real top-level
+domain could leak queries to the internet or collide with real names
+(`.camp`, the obvious choice, is a real one). Two names are reserved for
+exactly this: **`.internal`**, set aside by ICANN in 2024 for private
+networks and never to be delegated, and **`home.arpa`** (RFC 8375). We
+use `.internal`: `wildlifecam10.internal` is short and reads well. Never
+`.local`, which belongs to mDNS; systems will not send it to a DNS server.
+
+**Two things it makes easy.** `dhcp-host=` lines give each camera the same
+address every time, so a printed cheat sheet works even if names do not.
+And dnsmasq's lease file is a list of every camera on the network right
+now, which the location server can later show as a page: which cameras
+are in range, and when each was last seen.
+
+**The limit.** These names exist only on the `webelos` network. At home
+the router's DNS does not know them and `.local` is still the way, so
+`sync_cameras.py` would try `<name>.internal` as one more discovery step.
 
 ## On the cameras
 
@@ -233,7 +276,7 @@ gps-design.md describes.
 - **Pi 5 or a travel router.** The Pi is the plan unless range or battery
   says otherwise.
 - **Static addresses.** dnsmasq can give each camera the same address every
-  time, which makes a printed cheat sheet possible. mDNS and the `.camp`
+  time, which makes a printed cheat sheet possible. mDNS and the `.internal`
   names may be enough.
 - **Should the base station collect the photographs itself?** With a USB
   drive, it could `rsync` from every camera in range overnight, so the
@@ -246,7 +289,7 @@ gps-design.md describes.
    network should get the right time from it (`chronyc` or `sntp`).
 2. **The hotspot:** the NetworkManager connection and the dnsmasq drop-in.
    A laptop joins `webelos`, gets a `10.42.0.x` address, and resolves
-   `<laptop>.camp`.
+   `<laptop>.internal`.
 3. **One camera:** the `webelos` profile and the timesyncd drop-in.
    `timedatectl timesync-status` shows 10.42.0.1, and its next photograph
    says `"clock": {"source": "network"}`.
