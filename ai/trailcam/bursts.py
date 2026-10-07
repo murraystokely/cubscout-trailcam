@@ -52,6 +52,14 @@ METRIC_FIELDS = (
     "exposure_us", "analogue_gain", "ai_class", "ai_confidence",
 )
 
+# A Pi Zero has no battery-backed clock, so the time a camera writes can
+# be a week stale.  `boot` is a random id per power-up and `uptime_s` the
+# seconds since; between them they order frames truthfully whatever the
+# clock said.  Since the campout both are written to the per-boot
+# measurements CSV and to every sidecar; they travel in the metrics and
+# `manifest.add_frames` also puts them in their own columns.
+RUN_FIELDS = ("boot", "uptime_s")
+
 
 # The decisions in step8 that mean "the rules wanted this photograph",
 # copied from its own vocabulary (step8_reject_shadows.py, rules 5 to 8:
@@ -180,7 +188,8 @@ def _read_measurements(day_directory):
                         (row.get("decision") or "").strip() or None,
                         number("mean_luma"),
                         int(area) if area is not None else None,
-                        {field: row[field] for field in METRIC_FIELDS
+                        {field: row[field]
+                         for field in METRIC_FIELDS + RUN_FIELDS
                          if row.get(field) not in (None, "")},
                     )
         except OSError:

@@ -22,6 +22,12 @@ dependencies = [
     "pillow",
 ]
 
+[project.optional-dependencies]
+# Only the publishing commands (`trailcam publish ...`) need these, and
+# they are imported inside those functions, so the detector pass and the
+# tests keep running without them:  pip install -e ".[publish]"
+publish = ["pyinaturalist>=0.21", "keyring"]
+
 [project.scripts]
 trailcam = "trailcam.cli:main"
 

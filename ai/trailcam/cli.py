@@ -10,6 +10,11 @@
     python3 -m trailcam sample --size 200     # frames to label by eye
     python3 -m trailcam label <path> animal   # record what you saw
     python3 -m trailcam export md.json        # for Timelapse
+    python3 -m trailcam deployments load      # sites.csv + deployments.csv in
+    python3 -m trailcam deployments show      # where each camera has been
+    python3 -m trailcam publish inaturalist login            # once
+    python3 -m trailcam publish inaturalist fix-geoprivacy   # the 1 Oct mistake
+    python3 -m trailcam publish inaturalist import           # what is already up
 
 Each stage is a separate subcommand rather than one `run`, because the
 expensive stage is `detect` and nobody should have to rerun it to get a
@@ -24,9 +29,11 @@ from pathlib import Path
 from . import bench as bench_module
 from . import bursts
 from . import config
+from . import deployments as deployments_module
 from . import detect as detect_module
 from . import manifest as manifest_module
 from . import photos
+from . import publish_inat
 from . import report as report_module
 from . import shortlist as shortlist_module
 
@@ -230,9 +237,85 @@ def command_shortlist(options):
     shortlist_module.build(
         database, run_ids=options.run,
         kind=None if options.kind == "all" else options.kind,
-        top=options.top, destination=options.out)
+        top=options.top, destination=options.out, site=options.site)
     database.close()
     return 0
+
+
+def command_deployments(options):
+    """Copy sites.csv and deployments.csv into the manifest, or list them.
+
+    `load` is the whole procedure after editing either CSV: it upserts,
+    derives the clock offsets, re-stamps every frame's deployment and
+    says which frames belong nowhere, per camera and day, the way `scan`
+    says which frames have no CSV row.
+    """
+    database = manifest_module.open_manifest()
+
+    if options.what == "load":
+        try:
+            result = deployments_module.load(database)
+        except ValueError as problem:
+            print(problem)
+            database.close()
+            return 1
+
+        for warning in result["warnings"]:
+            print(f"  warning: {warning}")
+
+        placed, unplaced = deployments_module.place_frames(database)
+        print(f"{result['sites']} sites and {result['deployments']} "
+              f"deployments loaded; {placed} frames placed.")
+
+        if unplaced:
+            print(f"  {sum(unplaced.values())} frames belong to no "
+                  f"deployment: no row for their boot, and no date range "
+                  f"on their camera covers what the clock said.")
+            for (camera, day), count in sorted(unplaced.items()):
+                print(f"    {camera:14s} {day}  {count:6d}")
+
+        database.close()
+        return 0
+
+    rows = deployments_module.summary(database)
+    if not rows:
+        print("No deployments loaded yet. `deployments load` reads the CSVs.")
+        database.close()
+        return 0
+
+    for row in rows:
+        stretch = (row["boot"] if row["boot"]
+                   else f"{row['range_start']}..{row['range_end']}")
+        offset = (f"{row['clock_offset_s']:+9.0f} s"
+                  if row["clock_offset_s"] is not None else "  clock ok ")
+        flags = "".join(("baited " if row["baited"] else "",
+                         f"rot {row['rotation']} " if row["rotation"] else ""))
+        print(f"{row['id']:3d}  {row['site']:17s} {row['camera']:14s} "
+              f"{stretch:23s} {offset}  {row['frames']:6d} frames  {flags}")
+
+    database.close()
+    return 0
+
+
+def command_publish(options):
+    """Send curated observations to a destination, or fix what is there.
+
+    Every subcommand here is run by a person, on purpose, after looking:
+    iNaturalist forbids machine-generated observations and allows scripts
+    that upload what a person curated.  Nothing schedules these.
+    """
+    if options.what == "login":
+        return publish_inat.login()
+    if options.what == "fix-geoprivacy":
+        publish_inat.fix_geoprivacy(dry_run=options.dry_run)
+        return 0
+    if options.what == "import":
+        database = manifest_module.open_manifest()
+        publish_inat.import_existing(database, publish_inat.public_observations())
+        database.close()
+        return 0
+    print(f"{options.what}: not written yet.")
+    return 1
 
 
 def command_status(options):
@@ -371,10 +454,35 @@ def build_parser():
                                 "training frames, or both (default)")
     shortlist.add_argument("--top", type=int, default=30,
                            help="how many to print and put in the gallery")
+    shortlist.add_argument("--site", default=None,
+                           help="only frames from deployments at this site "
+                                "slug (sites.csv), e.g. backyard")
     shortlist.add_argument("--out", default=None,
                            help=f"gallery directory (default "
                                 f"{config.SHORTLIST_DIR})")
     shortlist.set_defaults(function=command_shortlist)
+
+    deployments = subcommands.add_parser(
+        "deployments", help="where each camera was, from the two CSVs")
+    deployments.add_argument("what", choices=("load", "show"),
+                             help="load: read sites.csv and deployments.csv "
+                                  "into the manifest and stamp every frame "
+                                  "with its deployment. show: list them")
+    deployments.set_defaults(function=command_deployments)
+
+    publish = subcommands.add_parser(
+        "publish", help="send curated observations to iNaturalist")
+    publish.add_argument("destination", choices=("inaturalist",))
+    publish.add_argument("what", choices=("login", "fix-geoprivacy", "import"),
+                         help="login: store credentials in the keyring. "
+                              "fix-geoprivacy: obscure every observation "
+                              "near an obscured site that is not yet. "
+                              "import: record the uploads made by hand, "
+                              "matched to their frames through the staging "
+                              "folder's manifest")
+    publish.add_argument("--dry-run", action="store_true",
+                         help="say what would change and change nothing")
+    publish.set_defaults(function=command_publish)
 
     status = subcommands.add_parser("status", help="how much is done")
     status.set_defaults(function=command_status)

@@ -39,7 +39,7 @@ def _placeholders(run_ids):
     return ", ".join("?" for _ in run_ids)
 
 
-def candidates(database, run_ids, kind=None):
+def candidates(database, run_ids, kind=None, site=None):
     """Every animal box at or above ANIMAL_TRUTH in any of the runs, best
     per frame.
 
@@ -58,6 +58,14 @@ def candidates(database, run_ids, kind=None):
     if kind:
         where += " AND f.kind = ?"
         arguments.append(kind)
+    # A site is a place cameras were put; `deployments load` stamps every
+    # frame with its deployment, and the deployment knows the site.  The
+    # same detector runs cover the back garden and the campout, so a
+    # gallery for one place has to say which, or it gets both.
+    if site:
+        where += (" AND f.deployment_id IN "
+                  "(SELECT id FROM deployments WHERE site = ?)")
+        arguments.append(site)
 
     rows = database.execute(
         f"""SELECT f.id AS frame_id, f.path, f.camera, f.day, f.captured_at,
@@ -251,16 +259,26 @@ def best_of_each_visit(entries):
     for group in visits(entries):
         best = max(group, key=lambda e: e["score"])
         best["visit_frames"] = len(group)
+        # Every frame of the visit, so a link recorded against any one of
+        # them (the hand uploads did not always pick the best-scored frame)
+        # still reaches this card.
+        best["visit_paths"] = [e["path"] for e in group]
         best["visit_start"] = group[0]["captured_at"]
         best["visit_end"] = group[-1]["captured_at"]
         result.append(best)
     return sorted(result, key=lambda e: -e["score"])
 
 
-def looked_at(database, run_ids):
+def looked_at(database, run_ids, site=None):
     """How much the runs have seen between them: the number for the top
     of the page.  Frames, not results, so a frame two models both saw
-    counts once."""
+    counts once.  With a site, only that site's frames."""
+    where = f"r.run_id IN ({_placeholders(run_ids)})"
+    arguments = list(run_ids)
+    if site:
+        where += (" AND f.deployment_id IN "
+                  "(SELECT id FROM deployments WHERE site = ?)")
+        arguments.append(site)
     row = database.execute(
         f"""SELECT COUNT(DISTINCT r.frame_id) AS frames,
                    COUNT(DISTINCT CASE WHEN f.kind = 'photo'
@@ -268,13 +286,27 @@ def looked_at(database, run_ids):
                    COUNT(DISTINCT f.camera) AS cameras,
                    MIN(f.day) AS first_day, MAX(f.day) AS last_day
               FROM frame_results r JOIN frames f ON f.id = r.frame_id
-             WHERE r.run_id IN ({_placeholders(run_ids)})""",
-        list(run_ids)).fetchone()
+             WHERE {where}""", arguments).fetchone()
     return dict(row)
 
 
+def published_links(database, destination="inaturalist"):
+    """{frame path: remote url} for every frame that is part of an
+    observation published at `destination`.  Read by the gallery so a
+    card can say where its picture already is, and a person flipping
+    through can see what is not yet up."""
+    rows = database.execute(
+        """SELECT f.path, p.remote_url
+             FROM publications p
+             JOIN observation_frames l ON l.observation_id = p.observation_id
+             JOIN frames f ON f.id = l.frame_id
+            WHERE p.destination = ? AND p.remote_url IS NOT NULL""",
+        (destination,)).fetchall()
+    return {row["path"]: row["remote_url"] for row in rows}
+
+
 def build(database, run_ids=None, kind=None, top=30, destination=None,
-          quiet=False):
+          quiet=False, site=None):
     """Rank, dedupe, print, and write the CSV and the gallery."""
     if run_ids:
         runs = [database.execute("SELECT * FROM runs WHERE id = ?",
@@ -290,11 +322,18 @@ def build(database, run_ids=None, kind=None, top=30, destination=None,
         runs = [reference]
 
     run_ids = [run["id"] for run in runs]
-    found = candidates(database, run_ids, kind=kind)
+    found = candidates(database, run_ids, kind=kind, site=site)
     entries = score(without_people(found,
                                    events_with_people(database, run_ids)))
     ranked = best_of_each_visit(entries)
-    totals = looked_at(database, run_ids)
+    totals = looked_at(database, run_ids, site=site)
+    published = published_links(database)
+    links = {}
+    for e in ranked:
+        for path in e.get("visit_paths", [e["path"]]):
+            if path in published:
+                links[e["path"]] = published[path]
+                break
 
     if not quiet:
         names = ", ".join(f"{run['id']} ({run['name']})" for run in runs)
@@ -315,7 +354,8 @@ def build(database, run_ids=None, kind=None, top=30, destination=None,
 
     destination = Path(destination or config.SHORTLIST_DIR)
     write_csv(ranked, destination / "shortlist.csv")
-    write_gallery(ranked, runs, destination, top=top, totals=totals)
+    write_gallery(ranked, runs, destination, top=top, totals=totals,
+                  links=links)
 
     if not quiet:
         print(f"\nWrote {destination / 'shortlist.csv'} and "
@@ -341,7 +381,7 @@ def write_csv(ranked, path):
                 e["visit_frames"], e["visit_start"], e["visit_end"]])
 
 
-def write_gallery(ranked, runs, destination, top=30, totals=None):
+def write_gallery(ranked, runs, destination, top=30, totals=None, links=None):
     """A static page of every visit: the top ones large, the rest as crops.
 
     The top entries get two images each -- the crop, padded generously,
@@ -356,12 +396,31 @@ def write_gallery(ranked, runs, destination, top=30, totals=None):
     """
     destination.mkdir(parents=True, exist_ok=True)
     images = destination / "images"
-    images.mkdir(exist_ok=True)
 
+    # Start from an empty images directory.  Files are named by rank, and
+    # ranks move between builds, so a rebuild that only added files left
+    # every earlier build's crops behind under the same rank numbers: by
+    # 24 September five builds had piled up 1,397 files for a 323-row
+    # gallery, and anything that picked a crop by its rank prefix could
+    # open a different animal from a different week.  That is how a batch
+    # of iNaturalist folders got six wrong species on 6 October.  The
+    # directory is derived from this call and nothing else, so clearing
+    # it costs nothing and the published copy stops carrying the pile.
+    if images.exists():
+        shutil.rmtree(images)
+    images.mkdir()
+
+    links = links or {}
     cards = []
     strip = []
+    on_inat = 0
     for rank, e in enumerate(ranked, start=1):
         source = config.PHOTO_ROOT / e["path"]
+        link = links.get(e["path"])
+        if link:
+            on_inat += 1
+        where = (f' &middot; <a class="inat" href="{html.escape(link)}">on iNaturalist</a>'
+                 if link else "")
         stem = f"{rank:03d}-{e['camera']}-{Path(e['path']).stem}"
         crop = images / f"{stem}-crop.jpg"
         when = e["captured_at"].replace("T", " ")[:19]
@@ -387,15 +446,15 @@ def write_gallery(ranked, runs, destination, top=30, totals=None):
       <b>#{rank}</b> {html.escape(e['camera'])} &middot; {when}<br>
       score {e['score']:.2f} = {why}<br>
       {e['visit_frames']} frame{'s' if e['visit_frames'] != 1 else ''} in this visit
-      &middot; <code>{html.escape(e['path'])}</code>
+      &middot; <code>{html.escape(e['path'])}</code>{where}
     </figcaption>
   </figure>""")
         else:
             strip.append(f"""
-  <figure class="small">
-    <img src="images/{crop.name}" alt="animal, {e['camera']} {when}"
-         title="#{rank} {e['camera']} {when} -- score {e['score']:.2f}, {e['path']}">
-    <figcaption>#{rank} {e['camera'][-2:]} {when[5:16]}</figcaption>
+  <figure class="small{' inat' if link else ''}">
+    {f'<a href="{html.escape(link)}">' if link else ''}<img src="images/{crop.name}" alt="animal, {e['camera']} {when}"
+         title="#{rank} {e['camera']} {when} -- score {e['score']:.2f}, {e['path']}{' -- on iNaturalist' if link else ''}">{'</a>' if link else ''}
+    <figcaption>#{rank} {e['camera'][-2:]} {when[5:16]}{' &middot; iNat' if link else ''}</figcaption>
   </figure>""")
 
     # noindex, because this page may end up on a public web server at an
@@ -412,6 +471,10 @@ def write_gallery(ranked, runs, destination, top=30, totals=None):
                   f"{totals['first_day']} to {totals['last_day']}.</p>")
     else:
         looked = ""
+    if on_inat:
+        looked += (f"<p class=\"total\"><b>{on_inat}</b> of the {len(ranked)} visits "
+                   f"are on iNaturalist; a green edge and an <i>iNat</i> label mark "
+                   f"them, and each links to its observation.</p>")
 
     page = f"""<!doctype html>
 <meta charset="utf-8">
@@ -428,6 +491,8 @@ def write_gallery(ranked, runs, destination, top=30, totals=None):
   img {{ width: 100%; height: auto; display: block; }}
   figcaption {{ padding: .5em 0 0; color: #333; }}
   code {{ font-size: 12px; color: #666; }}
+  figure.inat {{ border-color: #3a8f3a; border-width: 2px; }}
+  a.inat {{ color: #2a6f2a; font-weight: 600; }}
 </style>
 <h1>Best animal pictures</h1>
 {looked}

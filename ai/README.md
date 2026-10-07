@@ -264,6 +264,28 @@ It writes a CSV and a static gallery under `ai/data/shortlist/`. Every
 constant is in `config.py` with its reason, and every one of them is a
 first guess.
 
+## Where the cameras were, and when it really was
+
+```bash
+.venv/bin/python -m trailcam deployments load    # sites.csv + deployments.csv into the manifest
+.venv/bin/python -m trailcam deployments show
+```
+
+A **site** is a place cameras get put; a **deployment** is one camera at
+one site for a stretch of time, keyed by the camera's `boot` id where the
+sidecars carry one and by a date range where they do not. Both live in
+two hand-kept CSVs at the top of `ai/` (`sites-design.md` says why), and
+`deployments load` copies them in and stamps every frame with its
+deployment. A camera with no network keeps a stale clock, so a deployment
+can carry `true_start`, the time a person says the boot really happened;
+the manifest's `frame_times` view then gives every frame a `true_at`, and
+that is the only place the correction lives. Sites marked `obscured` have
+no coordinates in git; `ai/data/sites.private.csv` supplies them locally.
+
+Scripted uploads to iNaturalist (`trailcam publish inaturalist ...`) are
+the next layer up and need `pip install -e ".[publish]"`; nothing there
+runs unattended, by design.
+
 ## Checking the checker
 
 MegaDetector is not an oracle. It is weakest on small distant animals and on

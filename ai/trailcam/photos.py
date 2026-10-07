@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import config
-from .bursts import Frame, read_code_version
+from .bursts import Frame, RUN_FIELDS, read_code_version
 
 
 # The sidecar's motion block, flattened into the same metrics JSON a
@@ -66,11 +66,9 @@ MOTION_FIELDS = {
 # is one SQL query rather than an evening reading sidecars.
 BLOB_AREA_FIELDS = ("largest_blob_area", "biggest_blob")
 
-# A Pi Zero has no battery-backed clock, so `time` in a sidecar can be a
-# week stale.  `boot` is a random id per power-up and `uptime_s` the
-# seconds since; between them they order frames truthfully whatever the
-# clock said.  Kept in the metrics until `frames` grows columns for them.
-RUN_FIELDS = ("boot", "uptime_s")
+# The sidecar's `boot` and `uptime_s` (bursts.RUN_FIELDS) ride along in the
+# metrics too, so a query over `frame_results.metrics` reads a photograph
+# and a training frame alike.
 
 
 def _read_sidecar(path):
