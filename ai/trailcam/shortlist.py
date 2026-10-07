@@ -39,7 +39,7 @@ def _placeholders(run_ids):
     return ", ".join("?" for _ in run_ids)
 
 
-def candidates(database, run_ids, kind=None):
+def candidates(database, run_ids, kind=None, site=None):
     """Every animal box at or above ANIMAL_TRUTH in any of the runs, best
     per frame.
 
@@ -58,6 +58,14 @@ def candidates(database, run_ids, kind=None):
     if kind:
         where += " AND f.kind = ?"
         arguments.append(kind)
+    # A site is a place cameras were put; `deployments load` stamps every
+    # frame with its deployment, and the deployment knows the site.  The
+    # same detector runs cover the back garden and the campout, so a
+    # gallery for one place has to say which, or it gets both.
+    if site:
+        where += (" AND f.deployment_id IN "
+                  "(SELECT id FROM deployments WHERE site = ?)")
+        arguments.append(site)
 
     rows = database.execute(
         f"""SELECT f.id AS frame_id, f.path, f.camera, f.day, f.captured_at,
@@ -257,10 +265,16 @@ def best_of_each_visit(entries):
     return sorted(result, key=lambda e: -e["score"])
 
 
-def looked_at(database, run_ids):
+def looked_at(database, run_ids, site=None):
     """How much the runs have seen between them: the number for the top
     of the page.  Frames, not results, so a frame two models both saw
-    counts once."""
+    counts once.  With a site, only that site's frames."""
+    where = f"r.run_id IN ({_placeholders(run_ids)})"
+    arguments = list(run_ids)
+    if site:
+        where += (" AND f.deployment_id IN "
+                  "(SELECT id FROM deployments WHERE site = ?)")
+        arguments.append(site)
     row = database.execute(
         f"""SELECT COUNT(DISTINCT r.frame_id) AS frames,
                    COUNT(DISTINCT CASE WHEN f.kind = 'photo'
@@ -268,13 +282,12 @@ def looked_at(database, run_ids):
                    COUNT(DISTINCT f.camera) AS cameras,
                    MIN(f.day) AS first_day, MAX(f.day) AS last_day
               FROM frame_results r JOIN frames f ON f.id = r.frame_id
-             WHERE r.run_id IN ({_placeholders(run_ids)})""",
-        list(run_ids)).fetchone()
+             WHERE {where}""", arguments).fetchone()
     return dict(row)
 
 
 def build(database, run_ids=None, kind=None, top=30, destination=None,
-          quiet=False):
+          quiet=False, site=None):
     """Rank, dedupe, print, and write the CSV and the gallery."""
     if run_ids:
         runs = [database.execute("SELECT * FROM runs WHERE id = ?",
@@ -290,11 +303,11 @@ def build(database, run_ids=None, kind=None, top=30, destination=None,
         runs = [reference]
 
     run_ids = [run["id"] for run in runs]
-    found = candidates(database, run_ids, kind=kind)
+    found = candidates(database, run_ids, kind=kind, site=site)
     entries = score(without_people(found,
                                    events_with_people(database, run_ids)))
     ranked = best_of_each_visit(entries)
-    totals = looked_at(database, run_ids)
+    totals = looked_at(database, run_ids, site=site)
 
     if not quiet:
         names = ", ".join(f"{run['id']} ({run['name']})" for run in runs)

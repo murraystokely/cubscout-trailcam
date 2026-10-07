@@ -236,7 +236,7 @@ def command_shortlist(options):
     shortlist_module.build(
         database, run_ids=options.run,
         kind=None if options.kind == "all" else options.kind,
-        top=options.top, destination=options.out)
+        top=options.top, destination=options.out, site=options.site)
     database.close()
     return 0
 
@@ -448,6 +448,9 @@ def build_parser():
                                 "training frames, or both (default)")
     shortlist.add_argument("--top", type=int, default=30,
                            help="how many to print and put in the gallery")
+    shortlist.add_argument("--site", default=None,
+                           help="only frames from deployments at this site "
+                                "slug (sites.csv), e.g. backyard")
     shortlist.add_argument("--out", default=None,
                            help=f"gallery directory (default "
                                 f"{config.SHORTLIST_DIR})")

@@ -533,3 +533,42 @@ class RebuildingTheGallery(unittest.TestCase):
             self.assertEqual(list(images.iterdir()), [])
         finally:
             shutil.rmtree(directory)
+
+
+class ShortlistBySite(unittest.TestCase):
+    """`shortlist --site` keeps one place's frames and drops the rest."""
+
+    def test_candidates_filter_by_deployment_site(self):
+        import shutil, tempfile
+        from datetime import datetime
+        from pathlib import Path
+        from trailcam import bursts, manifest, shortlist
+        from trailcam.detector import Box
+        directory = Path(tempfile.mkdtemp())
+        try:
+            db = manifest.open_manifest(directory / "t.sqlite")
+            db.execute("INSERT INTO sites (slug, name) VALUES ('backyard', 'Garden'), ('park', 'Park')")
+            db.execute("INSERT INTO deployments (camera, site, range_start, range_end, camera_model) "
+                       "VALUES ('wildlifecam4', 'backyard', '2026-09-01', '2026-09-30', 'm'), "
+                       "('wildlifecam9', 'park', '2026-09-01', '2026-09-30', 'm')")
+            frames = []
+            for camera in ("wildlifecam4", "wildlifecam9"):
+                frames.append(bursts.Frame(
+                    camera=camera, day="2026-09-10",
+                    relative_path=f"{camera}/2026-09-10/100000.jpg",
+                    absolute_path=Path("x"), captured_at=datetime(2026, 9, 10, 10),
+                    camera_decision=None, mean_luma=100.0, largest_area=0,
+                    code_version="c", metrics=None, kind="photo"))
+            manifest.add_frames(db, frames)
+            db.execute("UPDATE frames SET deployment_id = (SELECT id FROM deployments d WHERE d.camera = frames.camera)")
+            run = manifest.start_run(db, "detector", "MDV5A")
+            for row in db.execute("SELECT id FROM frames"):
+                manifest.record_detections(db, run, row["id"], [Box("animal", 0.95, .1, .1, .2, .2, None)])
+            both = shortlist.candidates(db, [run])
+            garden = shortlist.candidates(db, [run], site="backyard")
+            self.assertEqual(len(both), 2)
+            self.assertEqual([e["camera"] for e in garden], ["wildlifecam4"])
+            self.assertEqual(shortlist.looked_at(db, [run], site="backyard")["frames"], 1)
+            db.close()
+        finally:
+            shutil.rmtree(directory)
