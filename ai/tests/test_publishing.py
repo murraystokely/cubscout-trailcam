@@ -505,3 +505,31 @@ class ObservationTables(PlacesBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebuildingTheGallery(unittest.TestCase):
+    """A rebuilt gallery holds exactly the current build's files.
+
+    Ranks move between builds, and the file names carry the rank, so a
+    rebuild that left old files behind let a reader pick the wrong
+    animal by rank prefix (6 October 2026).
+    """
+
+    def test_stale_crops_are_removed(self):
+        import shutil, tempfile
+        from pathlib import Path
+        from trailcam import shortlist
+        directory = Path(tempfile.mkdtemp())
+        try:
+            images = directory / "images"
+            images.mkdir(parents=True)
+            stale = images / "001-wildlifecam4-999999-crop.jpg"
+            stale.write_bytes(b"old")
+            # An empty ranked list writes a page and no images, which is
+            # enough to prove the directory was emptied first.
+            shortlist.write_gallery([], [{"name": "MDV5A"}], directory, top=1)
+            self.assertFalse(stale.exists())
+            self.assertTrue((directory / "index.html").exists())
+            self.assertEqual(list(images.iterdir()), [])
+        finally:
+            shutil.rmtree(directory)

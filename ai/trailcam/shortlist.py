@@ -356,7 +356,19 @@ def write_gallery(ranked, runs, destination, top=30, totals=None):
     """
     destination.mkdir(parents=True, exist_ok=True)
     images = destination / "images"
-    images.mkdir(exist_ok=True)
+
+    # Start from an empty images directory.  Files are named by rank, and
+    # ranks move between builds, so a rebuild that only added files left
+    # every earlier build's crops behind under the same rank numbers: by
+    # 24 September five builds had piled up 1,397 files for a 323-row
+    # gallery, and anything that picked a crop by its rank prefix could
+    # open a different animal from a different week.  That is how a batch
+    # of iNaturalist folders got six wrong species on 6 October.  The
+    # directory is derived from this call and nothing else, so clearing
+    # it costs nothing and the published copy stops carrying the pile.
+    if images.exists():
+        shutil.rmtree(images)
+    images.mkdir()
 
     cards = []
     strip = []
