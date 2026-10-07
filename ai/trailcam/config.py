@@ -312,3 +312,13 @@ OBSCURE_RADIUS_M = 1000.0
 # six requests.  Small batches so each one is looked at on the site before
 # the next.
 INAT_MAX_PER_RUN = 25
+
+# The hand uploads of 1-6 October were staged in this folder; its
+# manifest.csv is what `publish inaturalist import` uses to find which
+# frames each observation on the account came from.
+INAT_STAGING_MANIFEST = Path.home() / "inaturalist" / "manifest.csv"
+
+# Who the back-filled observations are credited to as curator: the
+# person who looked at the frames and typed the species into the
+# uploader.  The upload command proper records the login name.
+INAT_CURATOR = "murray"

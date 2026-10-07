@@ -572,3 +572,81 @@ class ShortlistBySite(unittest.TestCase):
             db.close()
         finally:
             shutil.rmtree(directory)
+
+
+class ImportingHandUploads(unittest.TestCase):
+    """Matching the account's observations to the staging folders."""
+
+    def folders(self):
+        return {"backyard-01-squirrel": {"camera": "wildlifecam4", "when": "2026-09-16 09:21:21",
+                                         "paths": ["wildlifecam4/2026-09-16/092121.jpg"]},
+                "campout-01-deer": {"camera": "wildlifecam9", "when": "2026-09-26 10:00:00",
+                                    "paths": ["wildlifecam9/2026-09-26/022026_309.jpg",
+                                              "wildlifecam9/2026-09-26/022027_331.jpg"]}}
+
+    def observation(self, identifier, when, camera=None):
+        ofvs = [{"field_id": 2943, "name": "Trap ID", "value": camera}] if camera else []
+        return {"id": identifier, "time_observed_at": when, "ofvs": ofvs,
+                "taxon": {"id": 1, "name": "x", "preferred_common_name": "X", "rank": "species"},
+                "created_at": "2026-10-01T10:00:00-07:00", "uri": f"https://inat/{identifier}",
+                "photos": [{"id": 1}, {"id": 2}], "quality_grade": "needs_id"}
+
+    def test_trap_id_and_time_pick_the_folder(self):
+        observations = [self.observation(1, "2026-09-16T09:21:00-07:00", "wildlifecam4"),
+                        self.observation(2, "2026-09-26T10:00:30-07:00", "wildlifecam9"),
+                        self.observation(3, "2026-06-24T17:49:43-07:00"),            # phone photo
+                        self.observation(4, "2026-09-16T12:00:00-07:00", "wildlifecam4")]  # no folder
+        matched, unmatched = publish_inat.match_observations(observations, self.folders())
+        self.assertEqual([(o["id"], f) for o, f in matched],
+                         [(1, "backyard-01-squirrel"), (2, "campout-01-deer")])
+        self.assertEqual([o["id"] for o in unmatched], [4])
+
+    def test_a_folder_is_used_once(self):
+        observations = [self.observation(1, "2026-09-16T09:21:00-07:00", "wildlifecam4"),
+                        self.observation(2, "2026-09-16T09:22:00-07:00", "wildlifecam4")]
+        matched, unmatched = publish_inat.match_observations(observations, self.folders())
+        self.assertEqual(len(matched), 1)
+        self.assertEqual([o["id"] for o in unmatched], [2])
+
+
+class ObservedTimes(unittest.TestCase):
+    def test_both_api_shapes_give_the_same_naive_time(self):
+        from datetime import datetime, timezone, timedelta
+        raw = {"time_observed_at": "2026-09-26T10:00:00-07:00"}
+        parsed = {"observed_on": datetime(2026, 9, 26, 10, 0, tzinfo=timezone(timedelta(hours=-7)))}
+        self.assertEqual(publish_inat.observed_at(raw), datetime(2026, 9, 26, 10, 0))
+        self.assertEqual(publish_inat.observed_at(parsed), datetime(2026, 9, 26, 10, 0))
+        self.assertIsNone(publish_inat.observed_at({"observed_on": "2026-09-26"}))
+
+
+class GalleryLinks(unittest.TestCase):
+    """A card whose visit is on iNaturalist links to it; others do not."""
+
+    def test_links_appear_only_for_published_frames(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        import shutil, tempfile
+        from pathlib import Path
+        from trailcam import config, shortlist
+        directory = Path(tempfile.mkdtemp())
+        photos = directory / "photos"
+        (photos / "a" / "2026-09-16").mkdir(parents=True)
+        for name in ("1.jpg", "2.jpg"):
+            Image.new("RGB", (120, 80), "grey").save(photos / "a" / "2026-09-16" / name)
+        saved = config.PHOTO_ROOT
+        config.PHOTO_ROOT = photos
+        try:
+            entry = lambda path: {"path": path, "camera": "wildlifecam4", "captured_at": "2026-09-16T09:21:21",
+                                  "confidence": 0.9, "x": .1, "y": .1, "w": .2, "h": .2, "score": 0.5,
+                                  "size_term": 1, "sharp_term": 1, "clipped": False, "visit_frames": 1}
+            ranked = [entry("a/2026-09-16/1.jpg"), entry("a/2026-09-16/2.jpg")]
+            shortlist.write_gallery(ranked, [{"name": "MDV5A"}], directory / "out", top=1,
+                                    links={"a/2026-09-16/1.jpg": "https://www.inaturalist.org/observations/1"})
+            page = (directory / "out" / "index.html").read_text()
+            self.assertEqual(page.count("observations/1"), 1)
+            self.assertIn("<b>1</b> of the 2 visits are on iNaturalist", page)
+        finally:
+            config.PHOTO_ROOT = saved
+            shutil.rmtree(directory)

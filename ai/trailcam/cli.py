@@ -14,6 +14,7 @@
     python3 -m trailcam deployments show      # where each camera has been
     python3 -m trailcam publish inaturalist login            # once
     python3 -m trailcam publish inaturalist fix-geoprivacy   # the 1 Oct mistake
+    python3 -m trailcam publish inaturalist import           # what is already up
 
 Each stage is a separate subcommand rather than one `run`, because the
 expensive stage is `detect` and nobody should have to rerun it to get a
@@ -308,6 +309,11 @@ def command_publish(options):
     if options.what == "fix-geoprivacy":
         publish_inat.fix_geoprivacy(dry_run=options.dry_run)
         return 0
+    if options.what == "import":
+        database = manifest_module.open_manifest()
+        publish_inat.import_existing(database, publish_inat.public_observations())
+        database.close()
+        return 0
     print(f"{options.what}: not written yet.")
     return 1
 
@@ -467,10 +473,13 @@ def build_parser():
     publish = subcommands.add_parser(
         "publish", help="send curated observations to iNaturalist")
     publish.add_argument("destination", choices=("inaturalist",))
-    publish.add_argument("what", choices=("login", "fix-geoprivacy"),
+    publish.add_argument("what", choices=("login", "fix-geoprivacy", "import"),
                          help="login: store credentials in the keyring. "
                               "fix-geoprivacy: obscure every observation "
-                              "near an obscured site that is not yet")
+                              "near an obscured site that is not yet. "
+                              "import: record the uploads made by hand, "
+                              "matched to their frames through the staging "
+                              "folder's manifest")
     publish.add_argument("--dry-run", action="store_true",
                          help="say what would change and change nothing")
     publish.set_defaults(function=command_publish)
