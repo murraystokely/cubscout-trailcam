@@ -379,6 +379,111 @@ pointed into moving branches, and a single fleet-wide number hides that.
 
 ---
 
+## Recording misses
+
+**Status:** design, 2026-10-06, prompted by the first miss we recorded.
+
+### The first one
+
+On 5 October a small grey-brown songbird sat on the fence in front of
+wildlifecam10 for about eight seconds. The camera saw it at every check and
+kept nothing. In seven frames step 8's shadow rule rejected it: an object
+needs a light-to-dark **range** of at least 110 and an **edge** of at least
+250, and a small grey bird against a shaded grey fence scored range 63--82
+and edge 123--238. In two more the patch was under `MIN_BLOB_AREA`. The
+on-sensor AI called it a "train" at 0.27.
+
+We only know because an hourly training burst happened to start 18 seconds
+before the bird landed. The frames, the camera's numbers for each, and
+human labels are in the private analysis repository,
+`labels/wildlifecam10-2026-09-25.csv` (the folder date is the camera's
+restored clock, not the real one).
+
+That one bird shows three gaps in what we record.
+
+### 1. Misses are only visible inside a burst
+
+A burst is 30 seconds an hour, under 1% of the day. Outside it, the camera
+already *notices* a near miss: when the shadow rule rejects a patch that
+came close (`NEAR_MISS_EDGE = 150` or `NEAR_MISS_RANGE = 80`), it writes a
+measurements row, up to `MAX_NEAR_MISS_PER_HOUR`. But the row has no
+picture, so nobody can ever tell whether it was a bird or a shadow.
+
+**Keep a picture of every near miss.** When a patch is rejected *close to*
+a threshold, save the small frame the rules were judging (640x480, already
+in memory, about 40 KB as a JPEG) as
+`training/nearmiss_<HHMMSS>_<mmm>.jpg`, and put its name in the row's
+`file` column. A near miss is any of:
+
+| rejected by | close means |
+|---|---|
+| the shadow rule | edge >= 150 or range >= 80 (the existing near-miss band) |
+| too small | area from half of `MIN_BLOB_AREA` up to it |
+| not confirmed | seen, but fewer than `CONFIRM_CHECKS` times in a row |
+
+Plus a **random one in 50** of all other rejections with any patch at all,
+so the record is not only ever the boundary. All of it capped at **60
+pictures an hour**, which is about 35 MB on a busy day, against the 0.63 GB
+a day the bursts cost.
+
+**Write down which rule said no, and by how much.** Each row gains a
+`rejected_by` column in words, e.g.
+`shadow: range 79.8 < 110, edge 215.9 < 250`, so the record does not
+depend on knowing which thresholds a given build had.
+
+**These pictures are a biased sample, on purpose.** They are chosen
+*because* they were nearly kept, which is exactly right for finding misses
+and for moving a boundary, and exactly wrong for measuring recall. Event
+recall keeps coming from the bursts alone; near misses are where we look
+to find out *why* recall is what it is.
+
+### 2. Nothing keeps a list of misses
+
+`report` prints a frame-level miss rate. Nothing writes down "this event
+was missed, this rule rejected it, these were the numbers, here is the
+picture" anywhere that lasts. The manifest is local to whichever laptop
+ran the pass and is not in git.
+
+**A `trailcam misses` command** finds every frame, burst or near miss,
+whose verdict is `animal` (MegaDetector >= 0.8, or a person's label) but
+which the camera did not save, groups them into events (same camera and
+boot, gaps under 30 s), and writes one row per event to **`misses.csv` in
+the private analysis repository**:
+
+| column | example |
+|---|---|
+| `camera`, `boot` | `wildlifecam10`, `9cadc58e` |
+| `camera_time`, `uptime_s` | the camera's clock and the uptime of the first frame; the true time when the boot's clock offset is known |
+| `frames` | 9 |
+| `rejected_by` | `shadow` 7, `too small` 2 |
+| `closest` | the frame nearest to being kept: area, range, edge, confirmations |
+| `thresholds` | `MIN_BLOB_AREA 301, SHADOW_MIN_RANGE 110, SHADOW_MIN_EDGE 250` |
+| `code` | `17e2c53ba105` |
+| `md_conf` | 0.24--0.87 |
+| `verdict_source` | `human` |
+| `image`, `crop` | paths on the NAS, relative to `trailcam/photos/` |
+
+It also lists, separately, the **candidates**: frames the camera rejected
+that MegaDetector scored in the uncertain band (0.2--0.8). The songbird
+lived almost entirely there, so a person has to look. Labelling those is
+what turns candidates into recorded misses.
+
+`misses.csv` is then the input to the tuning loop below: every proposed
+threshold change can be checked against "how many of the recorded misses
+would it have kept, and how many more false positives would it have let
+through".
+
+### 3. New frames were invisible to `report`
+
+`verdicts` reads only the **reference** detector run. Frames detected in a
+later run, as the songbird's were, show as "not yet seen" until someone
+remembers to `detect --extend <reference>` instead. `verdicts` should fall
+back to the newest run of the reference model and settings when the
+reference run has not seen a frame, and say which run it used. Human
+labels already take precedence over both.
+
+---
+
 ## The tuning loop
 
 1. **Collect** --- two or three differently-sited cameras run `--record` for a
@@ -412,6 +517,12 @@ line up with them.
 hand-labels for the uncertain band and for checking the checker.
 *Done when:* every training frame has a label, and we know how far to trust the
 automatic ones.
+
+**E1b --- Misses.** Near-miss pictures and `rejected_by` on the cameras;
+`trailcam misses`; the `verdicts` fallback.
+*Done when:* every missed event we can see, in a burst or as a near miss, is
+a row in `misses.csv` with its reason, its numbers and its picture --- the
+songbird of 5 October first.
 
 **E2 --- Baseline (the keystone).** `motion.py` extracted, `replay.py` written,
 current rules replayed against the labels.
